@@ -120,18 +120,28 @@ program
             : (Array.isArray(content) ? content.find((b: any) => b.type === 'text')?.text : null);
 
           if (Array.isArray(content) && content.some((b: any) => b.type === 'tool_result')) return;
-          if (!text) return;
 
-          // Check if message has images (local paths or image blocks)
-          const hasImages = Array.isArray(content) && content.some((b: any) => b.type === 'image');
+          // Extract base64 images from content blocks
+          const images: { base64: string; mediaType: string }[] = [];
+          if (Array.isArray(content)) {
+            for (const block of content) {
+              if (block.type === 'image' && block.source?.type === 'base64' && block.source?.data) {
+                images.push({
+                  base64: block.source.data,
+                  mediaType: block.source.media_type || 'image/png',
+                });
+              }
+            }
+          }
 
-          // Clean up image references in text
-          text = text
-            .replace(/\[Image: source: [^\]]+\]/g, '')
-            .replace(/\[Image #\d+\]\s*/g, hasImages ? '[📷] ' : '')
-            .trim();
-          if (!text && hasImages) text = '[📷 图片]';
-          if (!text) return;
+          // Clean up image reference placeholders from text
+          if (text) {
+            text = text
+              .replace(/\[Image: source: [^\]]+\]/g, '')
+              .replace(/\[Image #\d+\]\s*/g, '')
+              .trim();
+          }
+          if (!text && images.length === 0) return;
 
           // Remove previous reaction
           if (currentReactionId && lastUserMsgId) {
@@ -140,9 +150,13 @@ program
           }
 
           try {
-            const msgId = await feishu.sendText(feishuChatId, text, threadOpts);
+            let msgId: string | null = null;
+            if (images.length > 0) {
+              msgId = await feishu.sendPost(feishuChatId, text || '', images, threadOpts);
+            } else {
+              msgId = await feishu.sendText(feishuChatId, text!, threadOpts);
+            }
             if (!threadMsgId && msgId) threadMsgId = msgId;
-            // Add working reaction to user's message
             if (msgId) {
               lastUserMsgId = msgId;
               currentReactionId = await addWorkingReaction(feishu.channel, msgId);

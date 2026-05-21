@@ -7,11 +7,18 @@ import {
 } from '@larksuiteoapi/node-sdk';
 import type { FeishuConfig } from './config';
 
+export interface ImageData {
+  base64: string;
+  mediaType: string;
+}
+
 export interface FeishuBridge {
   channel: LarkChannel;
   streamCard(chatId: string, initialCard: object, opts?: SendOpts): Promise<CardStream>;
   /** Send text message. Returns message_id. */
   sendText(chatId: string, content: string, opts?: SendOpts): Promise<string | null>;
+  /** Send text + images as a post message. Returns message_id. */
+  sendPost(chatId: string, text: string, images: ImageData[], opts?: SendOpts): Promise<string | null>;
   disconnect(): Promise<void>;
 }
 
@@ -110,6 +117,58 @@ export async function startFeishuBridge(
               receive_id: chatId,
               msg_type: 'text',
               content: JSON.stringify({ text: content }),
+            },
+          });
+          return (resp as any)?.data?.message_id ?? null;
+        }
+      } catch {
+        return null;
+      }
+    },
+
+    async sendPost(chatId, text, images, opts) {
+      try {
+        // Upload images first
+        const imageKeys: string[] = [];
+        for (const img of images) {
+          const buf = Buffer.from(img.base64, 'base64');
+          const blob = new Blob([buf], { type: img.mediaType });
+          const formData = new FormData();
+          formData.append('image_type', 'message');
+          formData.append('image', blob, `image.${img.mediaType.split('/')[1] || 'png'}`);
+          const resp = await client.im.v1.image.create({ data: formData as any });
+          const key = (resp as any)?.data?.image_key;
+          if (key) imageKeys.push(key);
+        }
+
+        // Build post content
+        const contentLine: unknown[] = [];
+        if (text) contentLine.push({ tag: 'text', text });
+        for (const key of imageKeys) {
+          contentLine.push({ tag: 'img', image_key: key });
+        }
+
+        const postContent = JSON.stringify({
+          zh_cn: { content: [contentLine] },
+        });
+
+        if (opts?.replyTo) {
+          const resp = await client.im.v1.message.reply({
+            path: { message_id: opts.replyTo },
+            data: {
+              msg_type: 'post',
+              content: postContent,
+              reply_in_thread: opts.replyInThread ?? true,
+            },
+          });
+          return (resp as any)?.data?.message_id ?? null;
+        } else {
+          const resp = await client.im.v1.message.create({
+            params: { receive_id_type: 'chat_id' },
+            data: {
+              receive_id: chatId,
+              msg_type: 'post',
+              content: postContent,
             },
           });
           return (resp as any)?.data?.message_id ?? null;
