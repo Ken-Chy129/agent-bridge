@@ -115,18 +115,10 @@ program
           if (Array.isArray(content) && content.some((b: any) => b.type === 'tool_result')) return;
           if (!text) return;
 
-          if (!firstPromptSeen) {
-            firstPromptSeen = true;
-            // Send first message as thread title
-            const title = threadTitle(opts.dir, text);
-            try {
-              await feishu.sendMarkdown(feishuChatId, `**${title}**\n\n> ${text}`);
-            } catch {}
-          } else {
-            try {
-              await feishu.sendMarkdown(feishuChatId, `> ${text}`);
-            } catch {}
-          }
+          firstPromptSeen = true;
+          try {
+            await feishu.sendMarkdown(feishuChatId, text);
+          } catch {}
           return;
         }
 
