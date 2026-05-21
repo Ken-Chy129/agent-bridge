@@ -88,9 +88,7 @@ program
       }
     }
 
-    // Suppress console output while CC TUI owns the terminal.
-    // CC redraws the screen, but our writes briefly flash before that.
-    let localMode = true;
+    let inRemoteMode = false;
 
     const exitCode = await loop({
       cwd: opts.dir,
@@ -103,6 +101,8 @@ program
 
       onScanMessage: async (msg) => {
         if (!feishu || !feishuChatId) return;
+        // In remote mode, onRemoteEvent handles the card — skip scanner events
+        if (inRemoteMode) return;
 
         // Threading: first user message → top-level (creates thread),
         // everything after → replyTo first message (stays in same thread).
@@ -150,18 +150,35 @@ program
       },
 
       onRemoteEvent: async (evt) => {
-        // In remote mode, stream-json events also update the card
-        if (!cardStream) return;
+        if (!feishu || !feishuChatId) return;
+
+        // Create a fresh card for remote mode response
         if (evt.type === 'text') {
+          if (!cardStream) {
+            cardState = emptyCardState();
+            const threadOpts = threadMsgId
+              ? { replyTo: threadMsgId, replyInThread: true }
+              : {};
+            try {
+              cardStream = await feishu.streamCard(feishuChatId, renderCardJson(cardState, false), threadOpts);
+            } catch {}
+          }
           cardState = { ...cardState, texts: [...cardState.texts, evt.content], lastUpdate: Date.now() };
           scheduleCardUpdate();
         }
         if (evt.type === 'result') {
-          scheduleCardUpdate(true);
+          if (cardStream) {
+            try { await cardStream.update(renderCardJson(cardState, true)); } catch {}
+          }
+          cardStream = null;
+          cardState = emptyCardState();
         }
       },
 
       onModeChange: (mode) => {
+        inRemoteMode = mode === 'remote';
+        cardStream = null;
+        cardState = emptyCardState();
         if (mode === 'remote') {
           console.log('\n💬 会话已转到飞书，按 Ctrl+C 退出');
         }
