@@ -208,15 +208,10 @@ program
         cardStream = null;
         cardState = emptyCardState();
         if (mode === 'remote') {
-          console.clear();
-          console.log('╔══════════════════════════════════════════╗');
-          console.log('║  📱 Remote Mode — Feishu is in control   ║');
-          console.log('║                                          ║');
-          console.log('║  👉 Press any key to take back control   ║');
-          console.log('║     Ctrl+C to exit                       ║');
-          console.log('╚══════════════════════════════════════════╝\n');
-        } else {
-          console.clear();
+          console.log('\n\n  📱 Remote Mode — Feishu is in control\n');
+          console.log('  Press any key to take back control');
+          console.log('  Ctrl+C to exit\n');
+          console.log('  ─────────────────────────────────────\n');
         }
       },
 

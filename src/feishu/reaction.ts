@@ -1,17 +1,15 @@
 import type { LarkChannel } from '@larksuiteoapi/node-sdk';
 
-const WORKING_EMOJI = 'PROCESSING';
-
 export async function addWorkingReaction(
   channel: LarkChannel,
   messageId: string,
 ): Promise<string | undefined> {
   try {
-    const resp = await channel.rawClient.im.v1.messageReaction.create({
+    const r = (await channel.rawClient.im.v1.messageReaction.create({
       path: { message_id: messageId },
-      data: { reaction_type: { emoji_type: WORKING_EMOJI } },
-    });
-    return (resp as any)?.data?.reaction_id;
+      data: { reaction_type: { emoji_type: 'Typing' } },
+    })) as { data?: { reaction_id?: string } };
+    return r?.data?.reaction_id;
   } catch {
     return undefined;
   }
