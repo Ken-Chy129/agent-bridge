@@ -23,15 +23,18 @@ export async function runSetupWizard(): Promise<FeishuConfig> {
 
   const tenant = result.user_info?.tenant_brand === 'lark' ? 'lark' as const : 'feishu' as const;
 
+  const operatorOpenId = result.user_info?.open_id;
+
   console.log('\n✓ 应用创建成功');
   console.log(`  App ID:  ${result.client_id}`);
   console.log(`  Tenant:  ${tenant}`);
 
-  // Choose or create a topic group
+  // Choose or create a topic group, invite the operator
   const chatId = await setupTopicGroup({
     appId: result.client_id,
     appSecret: result.client_secret,
     tenant,
+    inviteOpenId: operatorOpenId,
   });
 
   return {
@@ -46,6 +49,7 @@ export async function setupTopicGroup(opts: {
   appId: string;
   appSecret: string;
   tenant: 'feishu' | 'lark';
+  inviteOpenId?: string;
 }): Promise<string | undefined> {
   const client = new Client({
     appId: opts.appId,
@@ -53,7 +57,6 @@ export async function setupTopicGroup(opts: {
     domain: opts.tenant === 'lark' ? Domain.Lark : Domain.Feishu,
   });
 
-  // List groups the bot is in
   console.log('\n正在查找 bot 已加入的群...');
   const groups = await listBotGroups(client);
 
@@ -85,7 +88,7 @@ export async function setupTopicGroup(opts: {
         return selected.chat_id;
       }
       if (idx === groups.length + 1) {
-        return await createTopicGroup(client, rl);
+        return await createTopicGroup(client, rl, opts.inviteOpenId);
       }
 
       console.log('无效选择，已跳过。');
@@ -94,7 +97,7 @@ export async function setupTopicGroup(opts: {
       console.log('\nbot 尚未加入任何群。');
       const create = await ask('是否创建一个话题群？(Y/n): ');
       if (create.toLowerCase() !== 'n') {
-        return await createTopicGroup(client, rl);
+        return await createTopicGroup(client, rl, opts.inviteOpenId);
       }
       console.log('已跳过。你可以在飞书中把 bot 拉入话题群，然后运行 agent-bridge config --chat-id <id>');
       return undefined;
@@ -107,6 +110,7 @@ export async function setupTopicGroup(opts: {
 async function createTopicGroup(
   client: Client,
   rl: { question: (q: string, cb: (a: string) => void) => void },
+  inviteOpenId?: string,
 ): Promise<string | undefined> {
   const ask = (q: string): Promise<string> =>
     new Promise((r) => rl.question(q, (a) => r(a.trim())));
@@ -115,10 +119,12 @@ async function createTopicGroup(
 
   try {
     const resp = await client.im.v1.chat.create({
+      params: { user_id_type: 'open_id' },
       data: {
         name,
         chat_mode: 'topic',
         chat_type: 'private',
+        ...(inviteOpenId ? { user_id_list: [inviteOpenId] } : {}),
       },
     });
 
@@ -129,7 +135,11 @@ async function createTopicGroup(
     }
 
     console.log(`\n✓ 话题群已创建: ${name} (${chatId})`);
-    console.log('  请在飞书中找到该群，并邀请需要的成员加入。');
+    if (inviteOpenId) {
+      console.log('  你已被自动加入该群。');
+    } else {
+      console.log('  请在飞书中找到该群，并邀请需要的成员加入。');
+    }
     return chatId;
   } catch (err) {
     console.error(`创建群失败: ${err}`);
