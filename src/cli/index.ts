@@ -164,6 +164,7 @@ program
   .description('Configure Feishu app (QR code wizard)')
   .option('--reset', 'Reset config and re-run wizard')
   .option('--chat-id <chatId>', 'Set topic group Chat ID directly')
+  .option('--create-group [name]', 'Create a new topic group and set as default')
   .action(async (opts) => {
     const cfg = loadConfig();
 
@@ -175,6 +176,26 @@ program
       cfg.feishu.chatId = opts.chatId;
       saveConfig(cfg);
       console.log(`Chat ID → ${opts.chatId}`);
+      return;
+    }
+
+    if (opts.createGroup !== undefined) {
+      if (!cfg.feishu) {
+        console.error('No Feishu config. Run `agent-bridge config` first.');
+        process.exit(1);
+      }
+      const { setupTopicGroup } = await import('../feishu/wizard');
+      const chatId = await setupTopicGroup({
+        appId: cfg.feishu.appId,
+        appSecret: cfg.feishu.appSecret,
+        tenant: cfg.feishu.tenant,
+        inviteOpenId: cfg.feishu.operatorOpenId,
+      });
+      if (chatId) {
+        cfg.feishu.chatId = chatId;
+        saveConfig(cfg);
+        console.log(`配置已保存到 ${configPath()}`);
+      }
       return;
     }
 
@@ -215,6 +236,7 @@ program
         appId: f.appId,
         appSecret: f.appSecret,
         tenant: f.tenant,
+        inviteOpenId: f.operatorOpenId,
       });
       if (chatId) {
         cfg.feishu!.chatId = chatId;

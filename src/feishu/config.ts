@@ -12,6 +12,8 @@ export interface FeishuConfig {
   tenant: 'feishu' | 'lark';
   /** Topic group chat ID where threads are created. */
   chatId?: string;
+  /** Operator's open_id (from QR scan), used to auto-invite into new groups. */
+  operatorOpenId?: string;
 }
 
 export interface BridgeConfig {

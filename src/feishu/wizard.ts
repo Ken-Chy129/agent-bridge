@@ -42,6 +42,7 @@ export async function runSetupWizard(): Promise<FeishuConfig> {
     appSecret: result.client_secret,
     tenant,
     chatId,
+    operatorOpenId,
   };
 }
 
