@@ -118,35 +118,67 @@ async function createTopicGroup(
 
   const name = (await ask('群名称 [Agent Bridge]: ')) || 'Agent Bridge';
 
-  try {
-    const resp = await client.im.v1.chat.create({
-      params: { user_id_type: 'open_id' },
-      data: {
-        name,
-        chat_mode: 'topic',
-        chat_type: 'private',
-        ...(inviteOpenId ? { user_id_list: [inviteOpenId] } : {}),
-      },
-    });
+  // Try with invite first, fallback to without if open_id is cross-app
+  let chatId: string | undefined;
 
-    const chatId = (resp as any)?.data?.chat_id;
-    if (!chatId) {
-      console.error('创建群失败：未返回 chat_id');
+  if (inviteOpenId) {
+    try {
+      const resp = await client.im.v1.chat.create({
+        params: { user_id_type: 'open_id' },
+        data: {
+          name,
+          chat_mode: 'topic',
+          chat_type: 'private',
+          user_id_list: [inviteOpenId],
+        },
+      });
+      chatId = (resp as any)?.data?.chat_id;
+    } catch {
+      // open_id cross-app or other error, fallback below
+    }
+  }
+
+  if (!chatId) {
+    try {
+      const resp = await client.im.v1.chat.create({
+        data: {
+          name,
+          chat_mode: 'topic',
+          chat_type: 'private',
+        },
+      });
+      chatId = (resp as any)?.data?.chat_id;
+    } catch (err) {
+      console.error(`创建群失败: ${err}`);
+      console.log('你可以手动创建话题群后运行 agent-bridge config --chat-id <id>');
       return undefined;
     }
+  }
 
-    console.log(`\n✓ 话题群已创建: ${name} (${chatId})`);
-    if (inviteOpenId) {
-      console.log('  你已被自动加入该群。');
-    } else {
-      console.log('  请在飞书中找到该群，并邀请需要的成员加入。');
-    }
-    return chatId;
-  } catch (err) {
-    console.error(`创建群失败: ${err}`);
-    console.log('你可以手动创建话题群后运行 agent-bridge config --chat-id <id>');
+  if (!chatId) {
+    console.error('创建群失败：未返回 chat_id');
     return undefined;
   }
+
+  console.log(`\n✓ 话题群已创建: ${name} (${chatId})`);
+
+  // Try to generate a share link so the user can join
+  try {
+    const linkResp = await client.im.v1.chat.link({
+      path: { chat_id: chatId },
+      data: { is_external: false, validity_period: '30_day' },
+    });
+    const link = (linkResp as any)?.data?.share_link;
+    if (link) {
+      console.log(`  加入群聊: ${link}`);
+      return chatId;
+    }
+  } catch {}
+
+  // If no share link, try adding the user's bot-specific open_id via search
+  console.log('  群已创建，请在飞书搜索群名加入，或私聊 bot 后重新运行:');
+  console.log('  agent-bridge config --reset');
+  return chatId;
 }
 
 interface GroupInfo {
