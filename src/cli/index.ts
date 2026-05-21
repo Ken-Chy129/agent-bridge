@@ -1,5 +1,4 @@
 import { createInterface } from 'node:readline';
-import { basename } from 'node:path';
 import { Command } from 'commander';
 import { ClaudeAdapter } from '../agent/claude/adapter';
 import { discoverCCSessions } from '../daemon/discover';
@@ -9,10 +8,10 @@ import {
   saveConfig,
   hasFeishuConfig,
   configPath,
-  type FeishuConfig,
 } from '../feishu/config';
 import { startFeishuBridge, type FeishuBridge } from '../feishu/channel';
 import { formatForFeishu, threadTitle } from '../feishu/format';
+import { runSetupWizard } from '../feishu/wizard';
 import type { NormalizedMessage } from '@larksuiteoapi/node-sdk';
 
 const program = new Command()
@@ -44,29 +43,41 @@ program
     // Message queue: Feishu messages waiting to be processed
     let remoteResolve: ((msg: string | null) => void) | null = null;
 
-    if (opts.feishu && hasFeishuConfig()) {
-      const cfg = loadConfig();
-      feishuChatId = cfg.feishu!.chatId;
-
-      try {
-        feishu = await startFeishuBridge(cfg.feishu!, {
-          onMessage: (msg: NormalizedMessage) => {
-            // Only handle messages from the configured chat
-            if (feishuChatId && msg.chatId !== feishuChatId) return;
-            const text = msg.content.trim();
-            if (!text) return;
-            console.error(`[feishu] received: ${text.slice(0, 60)}`);
-            if (remoteResolve) {
-              remoteResolve(text);
-              remoteResolve = null;
-            }
-          },
-        });
-      } catch (err) {
-        console.error(`[feishu] connection failed: ${err}. Continuing without Feishu.`);
+    if (opts.feishu) {
+      // Auto-trigger wizard on first run
+      if (!hasFeishuConfig()) {
+        try {
+          const feishuCfg = await runSetupWizard();
+          const cfg = loadConfig();
+          cfg.feishu = feishuCfg;
+          saveConfig(cfg);
+          console.log(`配置已保存到 ${configPath()}\n`);
+        } catch (err) {
+          console.error(`[feishu] 扫码配置失败: ${err}. Continuing without Feishu.`);
+        }
       }
-    } else if (opts.feishu) {
-      console.error(`[bridge] No Feishu config. Run 'agent-bridge config' to set up. Continuing without Feishu.`);
+
+      if (hasFeishuConfig()) {
+        const cfg = loadConfig();
+        feishuChatId = cfg.feishu!.chatId;
+
+        try {
+          feishu = await startFeishuBridge(cfg.feishu!, {
+            onMessage: (msg: NormalizedMessage) => {
+              if (feishuChatId && msg.chatId !== feishuChatId) return;
+              const text = msg.content.trim();
+              if (!text) return;
+              console.error(`[feishu] received: ${text.slice(0, 60)}`);
+              if (remoteResolve) {
+                remoteResolve(text);
+                remoteResolve = null;
+              }
+            },
+          });
+        } catch (err) {
+          console.error(`[feishu] connection failed: ${err}. Continuing without Feishu.`);
+        }
+      }
     }
 
     const exitCode = await loop({
@@ -150,30 +161,37 @@ program
 
 program
   .command('config')
-  .description('Configure Feishu app credentials')
-  .action(async () => {
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    const ask = (q: string): Promise<string> =>
-      new Promise((r) => rl.question(q, (a) => r(a.trim())));
-
+  .description('Configure Feishu app (QR code wizard)')
+  .option('--reset', 'Reset existing config and re-run wizard')
+  .option('--chat-id <chatId>', 'Set topic group Chat ID')
+  .action(async (opts) => {
     const cfg = loadConfig();
-    const existing = cfg.feishu;
 
-    console.log('Configure Feishu/Lark integration\n');
-    if (existing?.appId) {
-      console.log(`Current App ID: ${existing.appId}`);
+    // Just set chat ID without re-running wizard
+    if (opts.chatId) {
+      if (!cfg.feishu) {
+        console.error('No Feishu config found. Run `agent-bridge config` first.');
+        process.exit(1);
+      }
+      cfg.feishu.chatId = opts.chatId;
+      saveConfig(cfg);
+      console.log(`Chat ID set to ${opts.chatId}`);
+      console.log(`Saved to ${configPath()}`);
+      return;
     }
 
-    const appId = (await ask('App ID: ')) || existing?.appId || '';
-    const appSecret = (await ask('App Secret: ')) || existing?.appSecret || '';
-    const tenantInput = (await ask('Tenant (feishu/lark) [feishu]: ')) || existing?.tenant || 'feishu';
-    const tenant = tenantInput === 'lark' ? 'lark' : 'feishu' as const;
-    const chatId = (await ask('Topic group Chat ID (optional): ')) || existing?.chatId || '';
+    if (hasFeishuConfig() && !opts.reset) {
+      console.log(`Already configured (App ID: ${cfg.feishu!.appId})`);
+      console.log(`Run with --reset to reconfigure, or --chat-id <id> to set topic group.`);
+      console.log(`Config: ${configPath()}`);
+      return;
+    }
 
-    cfg.feishu = { appId, appSecret, tenant, chatId: chatId || undefined };
+    const feishuCfg = await runSetupWizard();
+    feishuCfg.chatId = cfg.feishu?.chatId;
+    cfg.feishu = feishuCfg;
     saveConfig(cfg);
-    console.log(`\nSaved to ${configPath()}`);
-    rl.close();
+    console.log(`配置已保存到 ${configPath()}`);
   });
 
 // --- discover ---
