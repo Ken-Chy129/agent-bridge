@@ -115,11 +115,22 @@ program
 
         if (msg.type === 'user') {
           const content = (msg.raw as any).message?.content;
-          const text = typeof content === 'string'
+          let text = typeof content === 'string'
             ? content
             : (Array.isArray(content) ? content.find((b: any) => b.type === 'text')?.text : null);
 
           if (Array.isArray(content) && content.some((b: any) => b.type === 'tool_result')) return;
+          if (!text) return;
+
+          // Check if message has images (local paths or image blocks)
+          const hasImages = Array.isArray(content) && content.some((b: any) => b.type === 'image');
+
+          // Clean up image references in text
+          text = text
+            .replace(/\[Image: source: [^\]]+\]/g, '')
+            .replace(/\[Image #\d+\]\s*/g, hasImages ? '[📷] ' : '')
+            .trim();
+          if (!text && hasImages) text = '[📷 图片]';
           if (!text) return;
 
           // Remove previous reaction
