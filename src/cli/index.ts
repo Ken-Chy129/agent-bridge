@@ -133,7 +133,7 @@ program
         // Assistant message → accumulate into streaming card
         if (msg.type === 'assistant') {
           // New turn: create a fresh card
-          if (!cardStream || cardState.texts.length === 0 && cardState.tools.length === 0) {
+          if (!cardStream) {
             cardState = emptyCardState();
             try {
               cardStream = await feishu.streamCard(feishuChatId, renderCardJson(cardState, false));
@@ -142,11 +142,16 @@ program
 
           cardState = reduceMessage(cardState, msg);
           const turnDone = msg.stopReason === 'end_turn';
-          scheduleCardUpdate(turnDone);
 
-          // Reset for next turn
           if (turnDone) {
+            // Final update: do it now, then reset
+            if (cardStream) {
+              try { await cardStream.update(renderCardJson(cardState, true)); } catch {}
+            }
             cardStream = null;
+            cardState = emptyCardState();
+          } else {
+            scheduleCardUpdate();
           }
         }
       },
