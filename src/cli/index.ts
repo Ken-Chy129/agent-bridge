@@ -73,4 +73,86 @@ program
     }
   });
 
+program
+  .command('relay [sessionId]')
+  .description('Relay an existing Claude Code session (observe JSONL in real-time)')
+  .action(async (sessionId?: string) => {
+    const allSessions = discoverCCSessions();
+
+    // If no session ID given, let user pick or use the most recent
+    let target = sessionId
+      ? allSessions.find((s) => s.sessionId === sessionId || s.sessionId.startsWith(sessionId!))
+      : null;
+
+    if (!target && !sessionId) {
+      if (allSessions.length === 0) {
+        console.log('No active Claude Code sessions found. Start one with `claude` first.');
+        process.exit(1);
+      }
+      if (allSessions.length === 1) {
+        target = allSessions[0];
+      } else {
+        console.log('Multiple sessions found, pick one:\n');
+        for (let i = 0; i < allSessions.length; i++) {
+          const s = allSessions[i];
+          const status = s.status === 'idle' ? 'idle' : s.status === 'busy' ? 'busy' : s.status;
+          console.log(`  ${i + 1}) PID ${s.pid} [${status}] ${s.cwd}`);
+          console.log(`     session: ${s.sessionId}`);
+        }
+        console.log(`\nRun: agent-bridge relay <sessionId>`);
+        process.exit(0);
+      }
+    }
+
+    if (!target) {
+      console.error(`Session not found: ${sessionId}`);
+      process.exit(1);
+    }
+
+    console.log(`Relaying session ${target.sessionId.slice(0, 8)}...`);
+    console.log(`  PID: ${target.pid} | cwd: ${target.cwd} | status: ${target.status}`);
+    console.log(`  Watching JSONL for real-time updates. Ctrl+C to stop.\n`);
+
+    const { createSessionScanner } = await import('../scanner');
+    const scanner = createSessionScanner({
+      workingDirectory: target.cwd,
+      onMessage: (msg) => {
+        const ts = new Date().toLocaleTimeString();
+        if (msg.type === 'user') {
+          const content = (msg.raw as any).message?.content;
+          const preview = typeof content === 'string'
+            ? content.slice(0, 80)
+            : JSON.stringify(content)?.slice(0, 80);
+          console.log(`[${ts}] user → ${preview}`);
+        } else if (msg.type === 'assistant') {
+          const content = (msg.raw as any).message?.content;
+          let preview = '';
+          if (Array.isArray(content)) {
+            const text = content.find((b: any) => b.type === 'text');
+            if (text?.text) preview = text.text.slice(0, 80);
+            const tools = content.filter((b: any) => b.type === 'tool_use');
+            if (tools.length > 0) preview += ` [+${tools.length} tool calls]`;
+          }
+          console.log(`[${ts}] assistant → ${preview || '(message)'}`);
+        } else if (msg.type === 'summary') {
+          console.log(`[${ts}] summary → ${(msg.raw as any).summary?.slice(0, 80)}`);
+        }
+        // TODO: push to Feishu thread
+      },
+    });
+
+    scanner.initExisting(target.sessionId);
+    scanner.startPolling();
+
+    // Keep alive until Ctrl+C
+    process.on('SIGINT', () => {
+      scanner.cleanup();
+      console.log('\nRelay stopped.');
+      process.exit(0);
+    });
+
+    // Keep the process alive
+    await new Promise(() => {});
+  });
+
 program.parse();
