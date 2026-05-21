@@ -9,11 +9,15 @@ import type { FeishuConfig } from './config';
 
 export interface FeishuBridge {
   channel: LarkChannel;
-  /** Send a streaming card to a chat. Returns a controller to update or finalize. */
-  streamCard(chatId: string, initialCard: object, opts?: { replyTo?: string; replyInThread?: boolean }): Promise<CardStream>;
-  /** Send a simple markdown message. */
-  sendMarkdown(chatId: string, content: string, opts?: { replyTo?: string }): Promise<void>;
+  streamCard(chatId: string, initialCard: object, opts?: SendOpts): Promise<CardStream>;
+  /** Send markdown, returns message_id. */
+  sendMarkdown(chatId: string, content: string, opts?: SendOpts): Promise<string | null>;
   disconnect(): Promise<void>;
+}
+
+export interface SendOpts {
+  replyTo?: string;
+  replyInThread?: boolean;
 }
 
 export interface CardStream {
@@ -65,8 +69,6 @@ export async function startFeishuBridge(
 
     async streamCard(chatId, initialCard, opts) {
       return new Promise<CardStream>((resolveCS) => {
-        // Fire-and-forget — don't await channel.stream() since the
-        // producer keeps it alive. We resolve as soon as ctrl is ready.
         channel.stream(
           chatId,
           {
@@ -76,7 +78,6 @@ export async function startFeishuBridge(
                 resolveCS({
                   async update(card) { await ctrl.update(card); },
                 });
-                // Keep producer alive indefinitely
                 await new Promise(() => {});
               },
             },
@@ -87,7 +88,16 @@ export async function startFeishuBridge(
     },
 
     async sendMarkdown(chatId, content, opts) {
-      await channel.send(chatId, { markdown: content }, opts ?? {});
+      const resp = await channel.rawClient.im.v1.message.create({
+        params: { receive_id_type: 'chat_id' },
+        data: {
+          receive_id: chatId,
+          msg_type: 'text',
+          content: JSON.stringify({ text: content }),
+          ...(opts?.replyTo ? { reply_in_thread: opts.replyInThread ?? false } : {}),
+        },
+      });
+      return (resp as any)?.data?.message_id ?? null;
     },
 
     async disconnect() {

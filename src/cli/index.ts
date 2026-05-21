@@ -39,7 +39,7 @@ program
     let feishuChatId: string | undefined;
     let cardStream: CardStream | null = null;
     let cardState = emptyCardState();
-    let firstPromptSeen = false;
+    let threadMsgId: string | null = null; // first message ID — all replies go under this thread
     let cardUpdateTimer: NodeJS.Timeout | null = null;
     let remoteResolve: ((msg: string | null) => void) | null = null;
 
@@ -104,31 +104,33 @@ program
       onScanMessage: async (msg) => {
         if (!feishu || !feishuChatId) return;
 
-        // User message → send as plain text, create thread on first one
+        // Threading: first user message → top-level (creates thread),
+        // everything after → replyTo first message (stays in same thread).
+        const threadOpts = threadMsgId
+          ? { replyTo: threadMsgId, replyInThread: true }
+          : {};
+
         if (msg.type === 'user') {
           const content = (msg.raw as any).message?.content;
           const text = typeof content === 'string'
             ? content
             : (Array.isArray(content) ? content.find((b: any) => b.type === 'text')?.text : null);
 
-          // Skip tool_result user messages (those are internal CC flow)
           if (Array.isArray(content) && content.some((b: any) => b.type === 'tool_result')) return;
           if (!text) return;
 
-          firstPromptSeen = true;
           try {
-            await feishu.sendMarkdown(feishuChatId, text);
+            const msgId = await feishu.sendMarkdown(feishuChatId, text, threadOpts);
+            if (!threadMsgId && msgId) threadMsgId = msgId;
           } catch {}
           return;
         }
 
-        // Assistant message → accumulate into streaming card
         if (msg.type === 'assistant') {
-          // New turn: create a fresh card
           if (!cardStream) {
             cardState = emptyCardState();
             try {
-              cardStream = await feishu.streamCard(feishuChatId, renderCardJson(cardState, false));
+              cardStream = await feishu.streamCard(feishuChatId, renderCardJson(cardState, false), threadOpts);
             } catch {}
           }
 
@@ -136,7 +138,6 @@ program
           const turnDone = msg.stopReason === 'end_turn';
 
           if (turnDone) {
-            // Final update: do it now, then reset
             if (cardStream) {
               try { await cardStream.update(renderCardJson(cardState, true)); } catch {}
             }
