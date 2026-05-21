@@ -12,6 +12,7 @@ import {
 import { startFeishuBridge, type FeishuBridge, type CardStream } from '../feishu/channel';
 import { threadTitle } from '../feishu/format';
 import { emptyCardState, reduceMessage, renderCardJson } from '../feishu/card-state';
+import { addWorkingReaction, removeReaction } from '../feishu/reaction';
 import { runSetupWizard } from '../feishu/wizard';
 import type { NormalizedMessage } from '@larksuiteoapi/node-sdk';
 
@@ -39,9 +40,11 @@ program
     let feishuChatId: string | undefined;
     let cardStream: CardStream | null = null;
     let cardState = emptyCardState();
-    let threadMsgId: string | null = null; // first message ID — all replies go under this thread
+    let threadMsgId: string | null = null;
     let cardUpdateTimer: NodeJS.Timeout | null = null;
     let remoteResolve: ((msg: string | null) => void) | null = null;
+    let currentReactionId: string | undefined;
+    let lastUserMsgId: string | null = null;
 
     const scheduleCardUpdate = (finished = false) => {
       if (!cardStream) return;
@@ -75,7 +78,7 @@ program
               if (feishuChatId && msg.chatId !== feishuChatId) return;
               const text = msg.content.trim();
               if (!text) return;
-              console.error(`[feishu] received: ${text.slice(0, 60)}`);
+              // Don't log here — remote mode display handles it
               if (remoteResolve) {
                 remoteResolve(text);
                 remoteResolve = null;
@@ -119,9 +122,20 @@ program
           if (Array.isArray(content) && content.some((b: any) => b.type === 'tool_result')) return;
           if (!text) return;
 
+          // Remove previous reaction
+          if (currentReactionId && lastUserMsgId) {
+            removeReaction(feishu.channel, lastUserMsgId, currentReactionId).catch(() => {});
+            currentReactionId = undefined;
+          }
+
           try {
             const msgId = await feishu.sendText(feishuChatId, text, threadOpts);
             if (!threadMsgId && msgId) threadMsgId = msgId;
+            // Add working reaction to user's message
+            if (msgId) {
+              lastUserMsgId = msgId;
+              currentReactionId = await addWorkingReaction(feishu.channel, msgId);
+            }
           } catch {}
           return;
         }
@@ -143,6 +157,11 @@ program
             }
             cardStream = null;
             cardState = emptyCardState();
+            // Remove reaction on completion
+            if (currentReactionId && lastUserMsgId) {
+              removeReaction(feishu.channel, lastUserMsgId, currentReactionId).catch(() => {});
+              currentReactionId = undefined;
+            }
           } else {
             scheduleCardUpdate();
           }
@@ -150,9 +169,18 @@ program
       },
 
       onRemoteEvent: async (evt) => {
-        if (!feishu || !feishuChatId) return;
+        // Terminal display
+        if (evt.type === 'text') {
+          process.stdout.write(evt.content);
+        } else if (evt.type === 'tool_use') {
+          console.log(`\n  🔧 ${evt.name}`);
+        } else if (evt.type === 'result') {
+          console.log('\n\n  ✅ Done\n');
+          console.log('  👉 Press any key to take back control\n');
+        }
 
-        // Create a fresh card for remote mode response
+        // Feishu card
+        if (!feishu || !feishuChatId) return;
         if (evt.type === 'text') {
           if (!cardStream) {
             cardState = emptyCardState();
@@ -180,7 +208,15 @@ program
         cardStream = null;
         cardState = emptyCardState();
         if (mode === 'remote') {
-          console.log('\n💬 会话已转到飞书，按 Ctrl+C 退出');
+          console.clear();
+          console.log('╔══════════════════════════════════════════╗');
+          console.log('║  📱 Remote Mode — Feishu is in control   ║');
+          console.log('║                                          ║');
+          console.log('║  👉 Press any key to take back control   ║');
+          console.log('║     Ctrl+C to exit                       ║');
+          console.log('╚══════════════════════════════════════════╝\n');
+        } else {
+          console.clear();
         }
       },
 

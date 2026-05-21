@@ -16,10 +16,10 @@ export interface LoopOptions {
   onScanMessage?: (msg: ScannedMessage) => void;
   onSessionId?: (sessionId: string) => void;
   onModeChange?: (mode: Mode) => void;
-  /** Called on each stream-json event in remote mode (for Feishu streaming cards). */
   onRemoteEvent?: (evt: AgentEvent) => void;
-  /** Returns a promise that resolves when a remote message arrives. null = exit. */
   waitForRemoteMessage?: () => Promise<string | null>;
+  /** Called when user presses a key in remote mode to switch back. */
+  onSwitchBackRequested?: () => void;
 }
 
 export async function loop(opts: LoopOptions): Promise<number> {
@@ -58,28 +58,57 @@ export async function loop(opts: LoopOptions): Promise<number> {
           mode = 'remote';
           opts.onModeChange?.('remote');
           if (result.pendingMessage) {
-            await runRemote({
+            const switchBack = await runRemote({
               cwd: opts.cwd,
               sessionId: sessionId!,
               agent: opts.agent,
               prompt: result.pendingMessage,
               model: opts.model,
               onEvent: opts.onRemoteEvent,
+              waitForRemoteMessage: opts.waitForRemoteMessage,
+              listenForSwitchBack: true,
             });
+            if (switchBack === 'switch-back') {
+              mode = 'local';
+              opts.onModeChange?.('local');
+              continue;
+            }
+          }
+          // Stay in remote mode, wait for more messages
+          while (mode === 'remote') {
+            const msg = await Promise.race([
+              opts.waitForRemoteMessage?.() ?? new Promise<null>(() => {}),
+              waitForKeypress().then(() => null as string | null),
+            ]);
+
+            if (msg === null) {
+              // Keypress detected or exit signal
+              mode = 'local';
+              opts.onModeChange?.('local');
+              break;
+            }
+
+            const switchBack = await runRemote({
+              cwd: opts.cwd,
+              sessionId: sessionId!,
+              agent: opts.agent,
+              prompt: msg,
+              model: opts.model,
+              onEvent: opts.onRemoteEvent,
+              waitForRemoteMessage: opts.waitForRemoteMessage,
+              listenForSwitchBack: true,
+            });
+            if (switchBack === 'switch-back') {
+              mode = 'local';
+              opts.onModeChange?.('local');
+              break;
+            }
           }
         }
       } else {
-        const msg = await opts.waitForRemoteMessage?.();
-        if (!msg) return 0;
-
-        await runRemote({
-          cwd: opts.cwd,
-          sessionId: sessionId!,
-          agent: opts.agent,
-          prompt: msg,
-          model: opts.model,
-          onEvent: opts.onRemoteEvent,
-        });
+        // Should not reach here — remote loop is handled above
+        mode = 'local';
+        opts.onModeChange?.('local');
       }
     }
   } finally {
@@ -87,6 +116,20 @@ export async function loop(opts: LoopOptions): Promise<number> {
     hookServer.stop();
     cleanupHookSettings(hookSettingsPath);
   }
+}
+
+function waitForKeypress(): Promise<void> {
+  return new Promise((resolve) => {
+    if (!process.stdin.isTTY) return;
+    const wasRaw = process.stdin.isRaw;
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.once('data', () => {
+      process.stdin.setRawMode(wasRaw ?? false);
+      process.stdin.pause();
+      resolve();
+    });
+  });
 }
 
 interface LocalResult {
@@ -145,7 +188,9 @@ async function runRemote(opts: {
   prompt: string;
   model?: string;
   onEvent?: (evt: AgentEvent) => void;
-}): Promise<void> {
+  waitForRemoteMessage?: () => Promise<string | null>;
+  listenForSwitchBack?: boolean;
+}): Promise<'done' | 'switch-back'> {
   const run = opts.agent.run({
     prompt: opts.prompt,
     sessionId: opts.sessionId,
@@ -153,13 +198,23 @@ async function runRemote(opts: {
     model: opts.model,
   });
 
+  let switchBack = false;
+  let keypressPromise: Promise<void> | null = null;
+
+  if (opts.listenForSwitchBack && process.stdin.isTTY) {
+    keypressPromise = waitForKeypress().then(() => { switchBack = true; });
+  }
+
   try {
     for await (const evt of run.events) {
       opts.onEvent?.(evt);
       if (evt.type === 'result' || evt.type === 'error') break;
+      if (switchBack) break;
     }
   } finally {
     const exited = await run.waitForExit(2000);
     if (!exited) await run.stop();
   }
+
+  return switchBack ? 'switch-back' : 'done';
 }
