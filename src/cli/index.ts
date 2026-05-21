@@ -9,8 +9,9 @@ import {
   hasFeishuConfig,
   configPath,
 } from '../feishu/config';
-import { startFeishuBridge, type FeishuBridge } from '../feishu/channel';
-import { formatForFeishu, threadTitle } from '../feishu/format';
+import { startFeishuBridge, type FeishuBridge, type CardStream } from '../feishu/channel';
+import { threadTitle } from '../feishu/format';
+import { emptyCardState, reduceMessage, renderCardJson } from '../feishu/card-state';
 import { runSetupWizard } from '../feishu/wizard';
 import type { NormalizedMessage } from '@larksuiteoapi/node-sdk';
 
@@ -34,14 +35,21 @@ program
     const claudeArgs: string[] = [];
     if (opts.continue) claudeArgs.push('--continue');
 
-    // Feishu bridge (optional)
     let feishu: FeishuBridge | null = null;
     let feishuChatId: string | undefined;
-    let threadMsgId: string | null = null;
+    let cardStream: CardStream | null = null;
+    let cardState = emptyCardState();
     let firstPromptSeen = false;
-
-    // Message queue: Feishu messages waiting to be processed
+    let cardUpdateTimer: NodeJS.Timeout | null = null;
     let remoteResolve: ((msg: string | null) => void) | null = null;
+
+    const scheduleCardUpdate = (finished = false) => {
+      if (!cardStream) return;
+      if (cardUpdateTimer) clearTimeout(cardUpdateTimer);
+      cardUpdateTimer = setTimeout(async () => {
+        try { await cardStream!.update(renderCardJson(cardState, finished)); } catch {}
+      }, finished ? 0 : 300);
+    };
 
     if (opts.feishu) {
       // Auto-trigger wizard on first run
@@ -94,39 +102,39 @@ program
       onSessionId: () => {},
 
       onScanMessage: async (msg) => {
-        if (!firstPromptSeen && msg.type === 'user' && feishu && feishuChatId) {
+        if (!feishu || !feishuChatId) return;
+
+        // Create streaming card on first user prompt
+        if (!firstPromptSeen && msg.type === 'user') {
           firstPromptSeen = true;
           const content = (msg.raw as any).message?.content;
           const text = typeof content === 'string' ? content : '';
           const title = threadTitle(opts.dir, text);
-          threadMsgId = await feishu.createThread(feishuChatId, title);
+
+          const initialCard = renderCardJson(emptyCardState(), false);
+          try {
+            cardStream = await feishu.streamCard(feishuChatId, initialCard);
+          } catch {}
         }
 
-        if (feishu && feishuChatId) {
-          const md = formatForFeishu(msg);
-          if (md) {
-            try {
-              await feishu.sendMarkdown(feishuChatId, md, {
-                replyTo: threadMsgId ?? undefined,
-              });
-            } catch {}
-          }
-        }
+        // Accumulate into card state and schedule update
+        cardState = reduceMessage(cardState, msg);
+        scheduleCardUpdate();
       },
 
       onRemoteEvent: async (evt) => {
-        if (!feishu || !feishuChatId) return;
+        // In remote mode, stream-json events also update the card
+        if (!cardStream) return;
         if (evt.type === 'text') {
-          try {
-            await feishu.sendMarkdown(feishuChatId, evt.content, {
-              replyTo: threadMsgId ?? undefined,
-            });
-          } catch {}
+          cardState = { ...cardState, texts: [...cardState.texts, evt.content], lastUpdate: Date.now() };
+          scheduleCardUpdate();
+        }
+        if (evt.type === 'result') {
+          scheduleCardUpdate(true);
         }
       },
 
       onModeChange: (mode) => {
-        localMode = mode === 'local';
         if (mode === 'remote') {
           console.log('\n💬 会话已转到飞书，按 Ctrl+C 退出');
         }
@@ -290,11 +298,11 @@ program
     console.log(`Relaying session ${target.sessionId.slice(0, 8)}...`);
     console.log(`  PID: ${target.pid} | cwd: ${target.cwd} | status: ${target.status}`);
 
-    // Optional Feishu relay
     let feishu: FeishuBridge | null = null;
     let feishuChatId: string | undefined;
-    let threadMsgId: string | null = null;
-    let firstPromptSeen = false;
+    let relayCardStream: CardStream | null = null;
+    let relayCardState = emptyCardState();
+    let relayFirstPrompt = false;
 
     if (hasFeishuConfig()) {
       const cfg = loadConfig();
@@ -307,6 +315,15 @@ program
       }
     }
 
+    let relayTimer: NodeJS.Timeout | null = null;
+    const scheduleRelayUpdate = (finished = false) => {
+      if (!relayCardStream) return;
+      if (relayTimer) clearTimeout(relayTimer);
+      relayTimer = setTimeout(async () => {
+        try { await relayCardStream!.update(renderCardJson(relayCardState, finished)); } catch {}
+      }, finished ? 0 : 300);
+    };
+
     console.log('  Watching JSONL for real-time updates. Ctrl+C to stop.\n');
 
     const { createSessionScanner } = await import('../scanner');
@@ -315,26 +332,20 @@ program
       onMessage: async (msg) => {
         const ts = new Date().toLocaleTimeString();
 
-        // Create Feishu thread on first user message
-        if (!firstPromptSeen && msg.type === 'user' && feishu && feishuChatId) {
-          firstPromptSeen = true;
+        // Create streaming card on first user message
+        if (!relayFirstPrompt && msg.type === 'user' && feishu && feishuChatId) {
+          relayFirstPrompt = true;
           const content = (msg.raw as any).message?.content;
           const text = typeof content === 'string' ? content : '';
           const title = threadTitle(target!.cwd, text);
-          threadMsgId = await feishu.createThread(feishuChatId, title);
+          try {
+            relayCardStream = await feishu.streamCard(feishuChatId, renderCardJson(emptyCardState(), false));
+          } catch {}
         }
 
-        // Push to Feishu
-        if (feishu && feishuChatId) {
-          const md = formatForFeishu(msg);
-          if (md) {
-            try {
-              await feishu.sendMarkdown(feishuChatId, md, {
-                replyTo: threadMsgId ?? undefined,
-              });
-            } catch {}
-          }
-        }
+        // Accumulate and update card
+        relayCardState = reduceMessage(relayCardState, msg);
+        scheduleRelayUpdate();
 
         // Console output
         if (msg.type === 'user') {

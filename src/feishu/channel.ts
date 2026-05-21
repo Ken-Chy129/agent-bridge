@@ -9,11 +9,15 @@ import type { FeishuConfig } from './config';
 
 export interface FeishuBridge {
   channel: LarkChannel;
-  /** Send markdown to a chat, optionally in a thread. */
-  sendMarkdown(chatId: string, content: string, opts?: { threadId?: string; replyTo?: string }): Promise<void>;
-  /** Create a thread (reply to a message in a topic group). */
-  createThread(chatId: string, title: string): Promise<string | null>;
+  /** Send a streaming card to a chat. Returns a controller to update or finalize. */
+  streamCard(chatId: string, initialCard: object, opts?: { replyTo?: string; replyInThread?: boolean }): Promise<CardStream>;
+  /** Send a simple markdown message. */
+  sendMarkdown(chatId: string, content: string, opts?: { replyTo?: string }): Promise<void>;
   disconnect(): Promise<void>;
+}
+
+export interface CardStream {
+  update(card: object): Promise<void>;
 }
 
 export interface FeishuBridgeCallbacks {
@@ -42,12 +46,13 @@ export async function startFeishuBridge(
       requireMention: false,
       respondToMentionAll: false,
     },
+    outbound: {
+      streamThrottleMs: 500,
+    },
   });
 
   channel.on({
-    message: async (msg) => {
-      callbacks.onMessage?.(msg);
-    },
+    message: async (msg) => { callbacks.onMessage?.(msg); },
     reconnecting: () => {},
     reconnected: () => {},
     error: () => {},
@@ -58,40 +63,33 @@ export async function startFeishuBridge(
   return {
     channel,
 
-    async sendMarkdown(chatId, content, opts) {
-      const sendOpts: Record<string, unknown> = {};
-      if (opts?.replyTo) sendOpts.replyTo = opts.replyTo;
-      if (opts?.threadId) sendOpts.replyInThread = true;
+    async streamCard(chatId, initialCard, opts) {
+      let resolve: ((cs: CardStream) => void) | null = null;
+      const ready = new Promise<CardStream>((r) => { resolve = r; });
 
-      await channel.send(chatId, { markdown: content }, sendOpts);
+      await channel.stream(
+        chatId,
+        {
+          card: {
+            initial: initialCard,
+            producer: async (ctrl) => {
+              const cs: CardStream = {
+                async update(card) { await ctrl.update(card); },
+              };
+              resolve!(cs);
+              // Keep producer alive until disconnect
+              await new Promise(() => {});
+            },
+          },
+        },
+        opts ?? {},
+      );
+
+      return ready;
     },
 
-    async createThread(chatId, title) {
-      // In a topic-mode group, sending a message at the top level creates a new thread.
-      // The thread_id is returned in the send response.
-      try {
-        const resp = await channel.rawClient.im.v1.message.create({
-          params: { receive_id_type: 'chat_id' },
-          data: {
-            receive_id: chatId,
-            msg_type: 'interactive',
-            content: JSON.stringify({
-              config: { update_multi: true },
-              elements: [
-                {
-                  tag: 'markdown',
-                  content: `**${title}**\n\n_会话已连接，等待消息..._`,
-                },
-              ],
-            }),
-          },
-        });
-        const msgId = (resp as any)?.data?.message_id;
-        return msgId ?? null;
-      } catch (err) {
-        console.error('[feishu] createThread failed:', err);
-        return null;
-      }
+    async sendMarkdown(chatId, content, opts) {
+      await channel.send(chatId, { markdown: content }, opts ?? {});
     },
 
     async disconnect() {
