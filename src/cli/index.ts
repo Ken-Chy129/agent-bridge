@@ -1,9 +1,7 @@
-import { createInterface } from 'node:readline';
 import { Command } from 'commander';
 import { ClaudeAdapter } from '../agent/claude/adapter';
-import { Daemon } from '../daemon/server';
 import { discoverCCSessions } from '../daemon/discover';
-import { MemorySessionStore } from '../session/store';
+import { loop } from '../loop';
 
 const program = new Command()
   .name('agent-bridge')
@@ -11,106 +9,54 @@ const program = new Command()
   .version('0.1.0');
 
 program
-  .command('start')
-  .description('Start the daemon')
-  .action(async () => {
-    const agents = new Map([['claude', new ClaudeAdapter()]]);
-    const sessions = new MemorySessionStore();
-    const daemon = new Daemon({ agents, sessions });
-    await daemon.start();
-
-    const shutdown = async () => {
-      console.log('\nshutting down...');
-      await daemon.shutdown();
-      process.exit(0);
-    };
-    process.on('SIGINT', shutdown);
-    process.on('SIGTERM', shutdown);
-  });
-
-program
-  .command('chat')
-  .description('Interactive chat with an agent (in-process, no daemon needed)')
-  .option('-a, --agent <id>', 'Agent to use', 'claude')
+  .command('chat', { isDefault: true })
+  .description('Start Claude Code with Feishu bridge (native TUI + JSONL relay)')
   .option('-d, --dir <path>', 'Working directory', process.cwd())
   .option('-m, --model <model>', 'Model override')
-  .option('-r, --resume <sessionId>', 'Resume a CC session')
+  .option('-r, --resume <sessionId>', 'Resume a CC session by ID')
+  .option('-c, --continue', 'Continue the most recent session')
   .action(async (opts) => {
-    const agents = new Map([['claude', new ClaudeAdapter()]]);
-    const sessions = new MemorySessionStore();
-    const daemon = new Daemon({ agents, sessions });
+    const agent = new ClaudeAdapter();
+    const claudeArgs: string[] = [];
+    if (opts.continue) claudeArgs.push('--continue');
 
-    const session = await daemon.createSession({
-      agentId: opts.agent,
+    const exitCode = await loop({
       cwd: opts.dir,
+      agent,
+      resumeSessionId: opts.resume,
       model: opts.model,
-    });
-
-    if (opts.resume) {
-      session.ccSessionId = opts.resume;
-      sessions.set(session);
-    }
-
-    console.log(`session ${session.id.slice(0, 8)} | agent: ${session.agentId} | cwd: ${session.cwd}`);
-    console.log('Type your message. Ctrl+C to exit.\n');
-
-    // Print events as they arrive
-    daemon.onEvent((sid, evt) => {
-      if (sid !== session.id) return;
-      switch (evt.type) {
-        case 'text':
-          process.stdout.write(evt.content);
-          break;
-        case 'tool_use':
-          console.log(`\n[tool] ${evt.name}`);
-          break;
-        case 'tool_result':
-          console.log(`[tool_result] ${evt.content.slice(0, 200)}`);
-          break;
-        case 'result':
-          console.log(`\n--- done${evt.duration ? ` (${(evt.duration / 1000).toFixed(1)}s)` : ''} ---\n`);
-          break;
-        case 'error':
-          console.error(`\n[error] ${evt.message}\n`);
-          break;
-      }
-    });
-
-    let sending = false;
-    let stdinClosed = false;
-
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    rl.on('close', () => {
-      stdinClosed = true;
-      if (!sending) process.exit(0);
-    });
-
-    const askNext = (): void => {
-      if (stdinClosed) return;
-      rl.question('> ', async (input) => {
-        const trimmed = input.trim();
-        if (!trimmed) { askNext(); return; }
-        if (trimmed === '/quit' || trimmed === '/exit') {
-          await daemon.stop(session.id);
-          process.exit(0);
+      claudeArgs,
+      onSessionId: (sid) => {
+        // TODO: when Feishu is connected, create thread here
+        console.error(`[bridge] session: ${sid}`);
+      },
+      onScanMessage: (msg) => {
+        // TODO: push to Feishu thread
+        if (msg.type === 'user') {
+          const content = (msg.raw as any).message?.content;
+          const preview = typeof content === 'string'
+            ? content.slice(0, 60)
+            : JSON.stringify(content)?.slice(0, 60);
+          console.error(`[bridge] scan: user → ${preview}`);
+        } else if (msg.type === 'assistant') {
+          console.error(`[bridge] scan: assistant message`);
         }
-        sending = true;
-        try {
-          await daemon.send(session.id, trimmed);
-        } catch (err) {
-          console.error(`[error] ${err}`);
+      },
+      onModeChange: (mode) => {
+        if (mode === 'remote') {
+          console.log('\n💬 会话已转到飞书，按 Ctrl+C 退出');
+        } else {
+          console.log('\n⌨️ 切回终端模式');
         }
-        sending = false;
-        if (stdinClosed) process.exit(0);
-        askNext();
-      });
-    };
-    askNext();
+      },
+    });
+
+    process.exit(exitCode);
   });
 
 program
   .command('discover')
-  .description('List local Claude Code sessions available for relay')
+  .description('List local Claude Code sessions')
   .action(() => {
     const sessions = discoverCCSessions();
     if (sessions.length === 0) {
