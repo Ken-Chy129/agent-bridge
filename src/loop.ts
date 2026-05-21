@@ -1,9 +1,8 @@
 import { spawn } from 'node:child_process';
-import { createInterface } from 'node:readline';
 import { createSessionScanner } from './scanner';
 import { startHookServer } from './hook/server';
 import { generateHookSettings, cleanupHookSettings } from './hook/settings';
-import type { AgentAdapter } from './agent/types';
+import type { AgentAdapter, AgentEvent } from './agent/types';
 import type { ScannedMessage } from './scanner';
 
 export type Mode = 'local' | 'remote';
@@ -14,12 +13,11 @@ export interface LoopOptions {
   resumeSessionId?: string;
   model?: string;
   claudeArgs?: string[];
-  /** Called when the scanner picks up a new JSONL message (for Feishu relay). */
   onScanMessage?: (msg: ScannedMessage) => void;
-  /** Called when session ID is discovered. */
   onSessionId?: (sessionId: string) => void;
-  /** Called when mode changes. */
   onModeChange?: (mode: Mode) => void;
+  /** Called on each stream-json event in remote mode (for Feishu streaming cards). */
+  onRemoteEvent?: (evt: AgentEvent) => void;
   /** Returns a promise that resolves when a remote message arrives. null = exit. */
   waitForRemoteMessage?: () => Promise<string | null>;
 }
@@ -28,7 +26,6 @@ export async function loop(opts: LoopOptions): Promise<number> {
   let sessionId = opts.resumeSessionId ?? null;
   let mode: Mode = 'local';
 
-  // Hook server to capture session ID from Claude
   const hookServer = await startHookServer((sid) => {
     sessionId = sid;
     scanner.initExisting(sid);
@@ -36,16 +33,13 @@ export async function loop(opts: LoopOptions): Promise<number> {
   });
   const hookSettingsPath = generateHookSettings(hookServer.port);
 
-  // JSONL scanner for real-time relay
   const scanner = createSessionScanner({
     workingDirectory: opts.cwd,
     onMessage: (msg) => opts.onScanMessage?.(msg),
   });
   scanner.startPolling();
 
-  if (sessionId) {
-    scanner.initExisting(sessionId);
-  }
+  if (sessionId) scanner.initExisting(sessionId);
 
   try {
     while (true) {
@@ -63,8 +57,6 @@ export async function loop(opts: LoopOptions): Promise<number> {
         if (result.type === 'switch') {
           mode = 'remote';
           opts.onModeChange?.('remote');
-
-          // Process the remote message that triggered the switch
           if (result.pendingMessage) {
             await runRemote({
               cwd: opts.cwd,
@@ -72,16 +64,13 @@ export async function loop(opts: LoopOptions): Promise<number> {
               agent: opts.agent,
               prompt: result.pendingMessage,
               model: opts.model,
-              onScanMessage: opts.onScanMessage,
+              onEvent: opts.onRemoteEvent,
             });
           }
         }
       } else {
-        // Remote mode: wait for messages from Feishu
         const msg = await opts.waitForRemoteMessage?.();
-        if (!msg) {
-          return 0;
-        }
+        if (!msg) return 0;
 
         await runRemote({
           cwd: opts.cwd,
@@ -89,11 +78,8 @@ export async function loop(opts: LoopOptions): Promise<number> {
           agent: opts.agent,
           prompt: msg,
           model: opts.model,
-          onScanMessage: opts.onScanMessage,
+          onEvent: opts.onRemoteEvent,
         });
-
-        // Check if user wants to switch back (non-blocking stdin check)
-        // For now, stay in remote mode until explicit switch
       }
     }
   } finally {
@@ -102,8 +88,6 @@ export async function loop(opts: LoopOptions): Promise<number> {
     cleanupHookSettings(hookSettingsPath);
   }
 }
-
-// --- Local mode: native CC TUI ---
 
 interface LocalResult {
   type: 'exit' | 'switch';
@@ -134,7 +118,6 @@ async function runLocal(opts: {
     let switchedByRemote = false;
     let pendingMessage: string | undefined;
 
-    // Listen for remote messages — if one arrives, kill local and switch
     if (opts.waitForRemoteMessage) {
       opts.waitForRemoteMessage().then((msg) => {
         if (msg && child.exitCode === null) {
@@ -155,15 +138,13 @@ async function runLocal(opts: {
   });
 }
 
-// --- Remote mode: stream-json for Feishu ---
-
 async function runRemote(opts: {
   cwd: string;
   sessionId: string;
   agent: AgentAdapter;
   prompt: string;
   model?: string;
-  onScanMessage?: (msg: ScannedMessage) => void;
+  onEvent?: (evt: AgentEvent) => void;
 }): Promise<void> {
   const run = opts.agent.run({
     prompt: opts.prompt,
@@ -174,8 +155,7 @@ async function runRemote(opts: {
 
   try {
     for await (const evt of run.events) {
-      // In remote mode, we rely on stream-json events for real-time Feishu updates.
-      // The scanner also picks up JSONL changes, but stream-json is more granular.
+      opts.onEvent?.(evt);
       if (evt.type === 'result' || evt.type === 'error') break;
     }
   } finally {
