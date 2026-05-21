@@ -119,7 +119,8 @@ program
 
         // Accumulate into card state and schedule update
         cardState = reduceMessage(cardState, msg);
-        scheduleCardUpdate();
+        const turnDone = msg.type === 'assistant' && msg.stopReason === 'end_turn';
+        scheduleCardUpdate(turnDone);
       },
 
       onRemoteEvent: async (evt) => {

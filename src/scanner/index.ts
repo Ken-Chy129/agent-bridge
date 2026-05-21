@@ -7,6 +7,8 @@ export interface ScannedMessage {
   type: 'user' | 'assistant' | 'summary' | 'system';
   uuid: string;
   raw: Record<string, unknown>;
+  /** For assistant messages: 'end_turn' means CC is done, 'tool_use' means more work coming. */
+  stopReason?: string;
 }
 
 const SKIP_TYPES = new Set(['file-history-snapshot', 'change', 'queue-operation', 'last-prompt', 'permission-mode']);
@@ -88,7 +90,8 @@ function readJSONL(projectDir: string, sessionId: string): ScannedMessage[] {
       if (!obj.uuid && obj.type !== 'summary') continue;
       const uuid = obj.uuid ?? `summary:${obj.leafUuid}`;
       if (['user', 'assistant', 'summary', 'system'].includes(obj.type)) {
-        msgs.push({ type: obj.type, uuid, raw: obj });
+        const stopReason = obj.type === 'assistant' ? obj.message?.stop_reason : undefined;
+        msgs.push({ type: obj.type, uuid, raw: obj, stopReason });
       }
     } catch {}
   }
