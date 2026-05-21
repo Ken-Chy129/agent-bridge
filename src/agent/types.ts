@@ -26,27 +26,9 @@ export interface AgentRun {
   waitForExit(timeoutMs: number): Promise<boolean>;
 }
 
-/**
- * Long-lived agent connection. Unlike AgentRun (one prompt → one response),
- * this represents a persistent bidirectional pipe to an agent process
- * started with stream-json input/output.
- */
-export interface AgentPipe {
-  send(prompt: string): void;
-  events: AsyncIterable<AgentEvent>;
-  stop(): Promise<void>;
-  readonly sessionId: string | undefined;
-  readonly pid: number | undefined;
-}
-
 export interface AgentAdapter {
   readonly id: string;
   readonly displayName: string;
   isAvailable(): Promise<boolean>;
-
-  /** One-shot: spawn a process for a single prompt, then exit. */
   run(opts: AgentRunOptions): AgentRun;
-
-  /** Long-lived: spawn a persistent process with bidirectional JSON pipe. */
-  pipe(opts: Omit<AgentRunOptions, 'prompt'>): AgentPipe;
 }

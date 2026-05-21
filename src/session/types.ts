@@ -2,14 +2,17 @@ export interface Session {
   id: string;
   agentId: string;
   cwd: string;
-  /** Feishu thread ID this session is bound to, if any. */
+  model?: string;
+  /** Claude Code session ID (used for --resume). */
+  ccSessionId?: string;
+  /** Feishu thread ID this session is bound to. */
   threadId?: string;
   /** Feishu chat ID (topic group). */
   chatId?: string;
   createdAt: number;
   updatedAt: number;
-  /** 'pipe' = daemon-hosted long-lived, 'relay' = attached to external CC process */
-  mode: 'pipe' | 'relay';
+  /** 'managed' = daemon-owned, 'relay' = attached to external CC process */
+  mode: 'managed' | 'relay';
   /** PID of the relay source (only for relay mode). */
   relayPid?: number;
 }
