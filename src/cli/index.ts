@@ -120,7 +120,7 @@ program
           if (!text) return;
 
           try {
-            const msgId = await feishu.sendMarkdown(feishuChatId, text, threadOpts);
+            const msgId = await feishu.sendText(feishuChatId, text, threadOpts);
             if (!threadMsgId && msgId) threadMsgId = msgId;
           } catch {}
           return;

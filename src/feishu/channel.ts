@@ -10,8 +10,8 @@ import type { FeishuConfig } from './config';
 export interface FeishuBridge {
   channel: LarkChannel;
   streamCard(chatId: string, initialCard: object, opts?: SendOpts): Promise<CardStream>;
-  /** Send markdown, returns message_id. */
-  sendMarkdown(chatId: string, content: string, opts?: SendOpts): Promise<string | null>;
+  /** Send text message. Returns message_id. */
+  sendText(chatId: string, content: string, opts?: SendOpts): Promise<string | null>;
   disconnect(): Promise<void>;
 }
 
@@ -64,6 +64,8 @@ export async function startFeishuBridge(
 
   await channel.connect();
 
+  const client = channel.rawClient;
+
   return {
     channel,
 
@@ -87,17 +89,34 @@ export async function startFeishuBridge(
       });
     },
 
-    async sendMarkdown(chatId, content, opts) {
-      const resp = await channel.rawClient.im.v1.message.create({
-        params: { receive_id_type: 'chat_id' },
-        data: {
-          receive_id: chatId,
-          msg_type: 'text',
-          content: JSON.stringify({ text: content }),
-          ...(opts?.replyTo ? { reply_in_thread: opts.replyInThread ?? false } : {}),
-        },
-      });
-      return (resp as any)?.data?.message_id ?? null;
+    async sendText(chatId, content, opts) {
+      try {
+        if (opts?.replyTo) {
+          // Reply to existing message (stays in the same thread)
+          const resp = await client.im.v1.message.reply({
+            path: { message_id: opts.replyTo },
+            data: {
+              msg_type: 'text',
+              content: JSON.stringify({ text: content }),
+              reply_in_thread: opts.replyInThread ?? true,
+            },
+          });
+          return (resp as any)?.data?.message_id ?? null;
+        } else {
+          // Top-level message (creates a new thread in topic groups)
+          const resp = await client.im.v1.message.create({
+            params: { receive_id_type: 'chat_id' },
+            data: {
+              receive_id: chatId,
+              msg_type: 'text',
+              content: JSON.stringify({ text: content }),
+            },
+          });
+          return (resp as any)?.data?.message_id ?? null;
+        }
+      } catch {
+        return null;
+      }
     },
 
     async disconnect() {
