@@ -16,13 +16,8 @@ export function emptyCardState(): CardState {
 }
 
 export function reduceMessage(state: CardState, msg: ScannedMessage): CardState {
-  if (msg.type === 'user') {
-    const content = (msg.raw as any).message?.content;
-    const text = extractText(content);
-    if (text) {
-      return { ...state, texts: [...state.texts, `**You:**\n${text}`], lastUpdate: Date.now() };
-    }
-  }
+  // User messages are sent separately, not accumulated into the card.
+  if (msg.type !== 'assistant') return state;
 
   if (msg.type === 'assistant') {
     const content = (msg.raw as any).message?.content;
