@@ -64,28 +64,26 @@ export async function startFeishuBridge(
     channel,
 
     async streamCard(chatId, initialCard, opts) {
-      let resolve: ((cs: CardStream) => void) | null = null;
-      const ready = new Promise<CardStream>((r) => { resolve = r; });
-
-      await channel.stream(
-        chatId,
-        {
-          card: {
-            initial: initialCard,
-            producer: async (ctrl) => {
-              const cs: CardStream = {
-                async update(card) { await ctrl.update(card); },
-              };
-              resolve!(cs);
-              // Keep producer alive until disconnect
-              await new Promise(() => {});
+      return new Promise<CardStream>((resolveCS) => {
+        // Fire-and-forget — don't await channel.stream() since the
+        // producer keeps it alive. We resolve as soon as ctrl is ready.
+        channel.stream(
+          chatId,
+          {
+            card: {
+              initial: initialCard,
+              producer: async (ctrl) => {
+                resolveCS({
+                  async update(card) { await ctrl.update(card); },
+                });
+                // Keep producer alive indefinitely
+                await new Promise(() => {});
+              },
             },
           },
-        },
-        opts ?? {},
-      );
-
-      return ready;
+          opts ?? {},
+        ).catch(() => {});
+      });
     },
 
     async sendMarkdown(chatId, content, opts) {
