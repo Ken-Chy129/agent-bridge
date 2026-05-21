@@ -48,21 +48,12 @@ export async function startFeishuBridge(
     message: async (msg) => {
       callbacks.onMessage?.(msg);
     },
-    reconnecting: () => {
-      console.error('[feishu] reconnecting...');
-    },
-    reconnected: () => {
-      console.error('[feishu] reconnected');
-    },
-    error: (err) => {
-      console.error('[feishu] error:', err?.message);
-    },
+    reconnecting: () => {},
+    reconnected: () => {},
+    error: () => {},
   });
 
   await channel.connect();
-
-  const identity = channel.botIdentity;
-  console.error(`[feishu] connected as ${identity?.name ?? 'unknown'}`);
 
   return {
     channel,

@@ -80,6 +80,10 @@ program
       }
     }
 
+    // Suppress console output while CC TUI owns the terminal.
+    // CC redraws the screen, but our writes briefly flash before that.
+    let localMode = true;
+
     const exitCode = await loop({
       cwd: opts.dir,
       agent,
@@ -87,22 +91,17 @@ program
       model: opts.model,
       claudeArgs,
 
-      onSessionId: (sid) => {
-        console.error(`[bridge] session: ${sid}`);
-      },
+      onSessionId: () => {},
 
       onScanMessage: async (msg) => {
-        // Create thread on first user prompt
         if (!firstPromptSeen && msg.type === 'user' && feishu && feishuChatId) {
           firstPromptSeen = true;
           const content = (msg.raw as any).message?.content;
           const text = typeof content === 'string' ? content : '';
           const title = threadTitle(opts.dir, text);
-          console.error(`[feishu] creating thread: ${title}`);
           threadMsgId = await feishu.createThread(feishuChatId, title);
         }
 
-        // Push to Feishu
         if (feishu && feishuChatId) {
           const md = formatForFeishu(msg);
           if (md) {
@@ -110,26 +109,12 @@ program
               await feishu.sendMarkdown(feishuChatId, md, {
                 replyTo: threadMsgId ?? undefined,
               });
-            } catch (err) {
-              console.error(`[feishu] send failed: ${err}`);
-            }
+            } catch {}
           }
-        }
-
-        // Console log
-        if (msg.type === 'user') {
-          const content = (msg.raw as any).message?.content;
-          const preview = typeof content === 'string'
-            ? content.slice(0, 60)
-            : JSON.stringify(content)?.slice(0, 60);
-          console.error(`[bridge] scan: user → ${preview}`);
-        } else if (msg.type === 'assistant') {
-          console.error(`[bridge] scan: assistant message`);
         }
       },
 
       onRemoteEvent: async (evt) => {
-        // In remote mode, stream-json events for Feishu real-time updates
         if (!feishu || !feishuChatId) return;
         if (evt.type === 'text') {
           try {
@@ -141,10 +126,9 @@ program
       },
 
       onModeChange: (mode) => {
+        localMode = mode === 'local';
         if (mode === 'remote') {
           console.log('\n💬 会话已转到飞书，按 Ctrl+C 退出');
-        } else {
-          console.log('\n⌨️  切回终端模式');
         }
       },
 
