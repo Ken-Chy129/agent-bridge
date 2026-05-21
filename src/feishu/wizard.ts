@@ -161,23 +161,9 @@ async function createTopicGroup(
   }
 
   console.log(`\n✓ 话题群已创建: ${name} (${chatId})`);
-
-  // Try to generate a share link so the user can join
-  try {
-    const linkResp = await client.im.v1.chat.link({
-      path: { chat_id: chatId },
-      data: { is_external: false, validity_period: '30_day' },
-    });
-    const link = (linkResp as any)?.data?.share_link;
-    if (link) {
-      console.log(`  加入群聊: ${link}`);
-      return chatId;
-    }
-  } catch {}
-
-  // If no share link, try adding the user's bot-specific open_id via search
-  console.log('  群已创建，请在飞书搜索群名加入，或私聊 bot 后重新运行:');
-  console.log('  agent-bridge config --reset');
+  if (inviteOpenId) {
+    console.log('  你已被自动加入该群。');
+  }
   return chatId;
 }
 
