@@ -162,36 +162,66 @@ program
 program
   .command('config')
   .description('Configure Feishu app (QR code wizard)')
-  .option('--reset', 'Reset existing config and re-run wizard')
-  .option('--chat-id <chatId>', 'Set topic group Chat ID')
+  .option('--reset', 'Reset config and re-run wizard')
+  .option('--chat-id <chatId>', 'Set topic group Chat ID directly')
   .action(async (opts) => {
     const cfg = loadConfig();
 
-    // Just set chat ID without re-running wizard
     if (opts.chatId) {
       if (!cfg.feishu) {
-        console.error('No Feishu config found. Run `agent-bridge config` first.');
+        console.error('No Feishu config. Run `agent-bridge config` first.');
         process.exit(1);
       }
       cfg.feishu.chatId = opts.chatId;
       saveConfig(cfg);
-      console.log(`Chat ID set to ${opts.chatId}`);
-      console.log(`Saved to ${configPath()}`);
+      console.log(`Chat ID → ${opts.chatId}`);
       return;
     }
 
-    if (hasFeishuConfig() && !opts.reset) {
-      console.log(`Already configured (App ID: ${cfg.feishu!.appId})`);
-      console.log(`Run with --reset to reconfigure, or --chat-id <id> to set topic group.`);
-      console.log(`Config: ${configPath()}`);
+    if (opts.reset || !hasFeishuConfig()) {
+      const feishuCfg = await runSetupWizard();
+      cfg.feishu = feishuCfg;
+      saveConfig(cfg);
+      console.log(`配置已保存到 ${configPath()}`);
       return;
     }
 
-    const feishuCfg = await runSetupWizard();
-    feishuCfg.chatId = cfg.feishu?.chatId;
-    cfg.feishu = feishuCfg;
-    saveConfig(cfg);
-    console.log(`配置已保存到 ${configPath()}`);
+    // Show current config and offer actions
+    const f = cfg.feishu!;
+    console.log(`\nFeishu 配置 (${configPath()})\n`);
+    console.log(`  App ID:   ${f.appId}`);
+    console.log(`  Tenant:   ${f.tenant}`);
+    console.log(`  Chat ID:  ${f.chatId ?? '(未设置)'}`);
+
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const ask = (q: string): Promise<string> =>
+      new Promise((r) => rl.question(q, (a) => r(a.trim())));
+
+    console.log(`\n  1) 重新扫码配置应用`);
+    console.log(`  2) 选择/创建话题群`);
+    console.log(`  0) 退出`);
+
+    const choice = await ask('\n选择 [0]: ');
+    rl.close();
+
+    if (choice === '1') {
+      const feishuCfg = await runSetupWizard();
+      cfg.feishu = feishuCfg;
+      saveConfig(cfg);
+      console.log(`配置已保存到 ${configPath()}`);
+    } else if (choice === '2') {
+      const { setupTopicGroup } = await import('../feishu/wizard');
+      const chatId = await setupTopicGroup({
+        appId: f.appId,
+        appSecret: f.appSecret,
+        tenant: f.tenant,
+      });
+      if (chatId) {
+        cfg.feishu!.chatId = chatId;
+        saveConfig(cfg);
+        console.log(`配置已保存到 ${configPath()}`);
+      }
+    }
   });
 
 // --- discover ---

@@ -42,7 +42,7 @@ export async function runSetupWizard(): Promise<FeishuConfig> {
   };
 }
 
-async function setupTopicGroup(opts: {
+export async function setupTopicGroup(opts: {
   appId: string;
   appSecret: string;
   tenant: 'feishu' | 'lark';
