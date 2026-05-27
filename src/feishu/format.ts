@@ -6,18 +6,16 @@ import { basename } from 'node:path';
  */
 export function formatForFeishu(msg: ScannedMessage): string | null {
   if (msg.type === 'user') {
-    const content = (msg.raw as any).message?.content;
-    const text = extractText(content);
+    const text = extractText(msg.content);
     if (!text) return null;
     return `**You:**\n${text}`;
   }
 
   if (msg.type === 'assistant') {
-    const content = (msg.raw as any).message?.content;
-    if (!Array.isArray(content)) return null;
+    if (!Array.isArray(msg.content)) return null;
 
     const parts: string[] = [];
-    for (const block of content) {
+    for (const block of msg.content) {
       if (block.type === 'text' && block.text) {
         parts.push(block.text);
       } else if (block.type === 'tool_use') {
@@ -32,7 +30,7 @@ export function formatForFeishu(msg: ScannedMessage): string | null {
   }
 
   if (msg.type === 'summary') {
-    return `_${(msg.raw as any).summary}_`;
+    return `_${msg.summaryText}_`;
   }
 
   return null;
@@ -50,7 +48,7 @@ export function threadTitle(cwd: string, firstPrompt: string): string {
   return `【${project}】${prompt}`;
 }
 
-function extractText(content: unknown): string | null {
+export function extractText(content: unknown): string | null {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
     const textBlock = content.find((b: any) => b.type === 'text');

@@ -114,7 +114,7 @@ program
           : {};
 
         if (msg.type === 'user') {
-          const content = (msg.raw as any).message?.content;
+          const content = msg.content;
           let text = typeof content === 'string'
             ? content
             : (Array.isArray(content) ? content.find((b: any) => b.type === 'text')?.text : null);
@@ -435,7 +435,7 @@ program
         // Create streaming card on first user message
         if (!relayFirstPrompt && msg.type === 'user' && feishu && feishuChatId) {
           relayFirstPrompt = true;
-          const content = (msg.raw as any).message?.content;
+          const content = msg.content;
           const text = typeof content === 'string' ? content : '';
           const title = threadTitle(target!.cwd, text);
           try {
@@ -449,13 +449,13 @@ program
 
         // Console output
         if (msg.type === 'user') {
-          const content = (msg.raw as any).message?.content;
+          const content = msg.content;
           const preview = typeof content === 'string'
             ? content.slice(0, 80)
             : JSON.stringify(content)?.slice(0, 80);
           console.log(`[${ts}] user → ${preview}`);
         } else if (msg.type === 'assistant') {
-          const content = (msg.raw as any).message?.content;
+          const content = msg.content;
           let preview = '';
           if (Array.isArray(content)) {
             const text = content.find((b: any) => b.type === 'text');

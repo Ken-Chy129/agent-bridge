@@ -16,17 +16,15 @@ export function emptyCardState(): CardState {
 }
 
 export function reduceMessage(state: CardState, msg: ScannedMessage): CardState {
-  // User messages are sent separately, not accumulated into the card.
   if (msg.type !== 'assistant') return state;
 
   if (msg.type === 'assistant') {
-    const content = (msg.raw as any).message?.content;
-    if (!Array.isArray(content)) return state;
+    if (!Array.isArray(msg.content)) return state;
 
     const newTexts = [...state.texts];
     const newTools = [...state.tools];
 
-    for (const block of content) {
+    for (const block of msg.content as any[]) {
       if (block.type === 'text' && block.text) {
         newTexts.push(block.text);
       } else if (block.type === 'tool_use' && block.name) {
@@ -93,7 +91,15 @@ export function renderCardJson(state: CardState, finished: boolean): object {
 }
 
 function toolIcon(t: ToolInfo): string {
-  return '✅';
+  switch (t.name) {
+    case 'Bash': return '⚡';
+    case 'Read': return '📖';
+    case 'Edit': case 'Write': return '✏️';
+    case 'Grep': return '🔍';
+    case 'WebSearch': return '🌐';
+    case 'Agent': return '🤖';
+    default: return '🔧';
+  }
 }
 
 function summarizeTool(name: string, input: unknown): string {
@@ -123,11 +129,3 @@ function shortenPath(p: string): string {
   return p;
 }
 
-function extractText(content: unknown): string | null {
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    const textBlock = content.find((b: any) => b.type === 'text');
-    return textBlock?.text ?? null;
-  }
-  return null;
-}
