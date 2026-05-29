@@ -15,11 +15,15 @@ import { emptyCardState, reduceMessage, renderCardJson } from '../feishu/card-st
 import { addWorkingReaction, removeReaction } from '../feishu/reaction';
 import { runSetupWizard } from '../feishu/wizard';
 import type { NormalizedMessage } from '@larksuiteoapi/node-sdk';
+import { registerServeCommand } from './serve';
 
 const program = new Command()
   .name('agent-bridge')
   .description('Bridge local coding agents to Feishu/Lark with daemon-hosted multi-view sessions')
   .version('0.1.0');
+
+// --- serve (daemon mode) ---
+registerServeCommand(program);
 
 // --- chat ---
 

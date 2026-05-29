@@ -1,7 +1,10 @@
 export type { AgentAdapter, AgentEvent, AgentRun, AgentRunOptions } from './agent/types';
 export type { Session, SessionStore } from './session/types';
 export type { ScannedMessage } from './scanner';
+export type { SdkEvent } from './agent/claude/sdk-runner';
 export { ClaudeAdapter } from './agent/claude/adapter';
+export { startSdkSession, resumeSdkSession } from './agent/claude/sdk-runner';
+export { SessionManager } from './serve/session-manager';
 export { Daemon } from './daemon/server';
 export { MemorySessionStore } from './session/store';
 export { createSessionScanner } from './scanner';

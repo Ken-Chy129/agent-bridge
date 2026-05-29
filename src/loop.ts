@@ -26,10 +26,12 @@ export async function loop(opts: LoopOptions): Promise<number> {
   let sessionId = opts.resumeSessionId ?? null;
   let mode: Mode = 'local';
 
-  const hookServer = await startHookServer((sid) => {
-    sessionId = sid;
-    scanner.initExisting(sid);
-    opts.onSessionId?.(sid);
+  const hookServer = await startHookServer({
+    onSessionStart: (sid: string) => {
+      sessionId = sid;
+      scanner.initExisting(sid);
+      opts.onSessionId?.(sid);
+    },
   });
   const hookSettingsPath = generateHookSettings(hookServer.port);
 

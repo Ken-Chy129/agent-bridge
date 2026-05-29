@@ -1,25 +1,40 @@
 import { createServer, type Server } from 'node:http';
 
-/**
- * Lightweight HTTP server that receives Claude's SessionStart hook.
- * Claude spawns a hook command that POSTs session data to us.
- */
+export interface HookServerCallbacks {
+  onSessionStart?: (sessionId: string, cwd: string) => void;
+  onStop?: (sessionId: string) => void;
+}
+
 export async function startHookServer(
-  onSession: (sessionId: string) => void,
+  callbacks: HookServerCallbacks,
 ): Promise<{ port: number; stop: () => void }> {
   return new Promise((resolve, reject) => {
     const server: Server = createServer(async (req, res) => {
-      if (req.method === 'POST' && req.url === '/hook/session-start') {
-        const chunks: Buffer[] = [];
-        for await (const chunk of req) chunks.push(chunk as Buffer);
-        try {
-          const data = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-          const sid = data.session_id ?? data.sessionId;
-          if (sid) onSession(sid);
-        } catch {}
+      if (req.method !== 'POST') {
+        res.writeHead(404).end();
+        return;
+      }
+
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(chunk as Buffer);
+      let data: Record<string, unknown> = {};
+      try { data = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch {}
+
+      if (req.url === '/hook/session-start') {
+        const sid = (data.session_id ?? data.sessionId) as string | undefined;
+        const cwd = (data.cwd ?? '') as string;
+        if (sid) callbacks.onSessionStart?.(sid, cwd);
         res.writeHead(200).end('ok');
         return;
       }
+
+      if (req.url === '/hook/stop') {
+        const sid = (data.session_id ?? data.sessionId) as string | undefined;
+        if (sid) callbacks.onStop?.(sid);
+        res.writeHead(200).end('ok');
+        return;
+      }
+
       res.writeHead(404).end();
     });
 

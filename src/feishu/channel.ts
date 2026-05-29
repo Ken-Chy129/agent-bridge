@@ -15,6 +15,8 @@ export interface ImageData {
 export interface FeishuBridge {
   channel: LarkChannel;
   streamCard(chatId: string, initialCard: object, opts?: SendOpts): Promise<CardStream>;
+  /** Send an interactive card. Returns message_id. */
+  sendCard(chatId: string, card: object, opts?: SendOpts): Promise<string | null>;
   /** Send text message. Returns message_id. */
   sendText(chatId: string, content: string, opts?: SendOpts): Promise<string | null>;
   /** Send text + images as a post message. Returns message_id. */
@@ -94,6 +96,34 @@ export async function startFeishuBridge(
           opts ?? {},
         ).catch(() => {});
       });
+    },
+
+    async sendCard(chatId, card, opts) {
+      try {
+        if (opts?.replyTo) {
+          const resp = await client.im.v1.message.reply({
+            path: { message_id: opts.replyTo },
+            data: {
+              msg_type: 'interactive',
+              content: JSON.stringify(card),
+              reply_in_thread: opts.replyInThread ?? true,
+            },
+          });
+          return (resp as any)?.data?.message_id ?? null;
+        } else {
+          const resp = await client.im.v1.message.create({
+            params: { receive_id_type: 'chat_id' },
+            data: {
+              receive_id: chatId,
+              msg_type: 'interactive',
+              content: JSON.stringify(card),
+            },
+          });
+          return (resp as any)?.data?.message_id ?? null;
+        }
+      } catch {
+        return null;
+      }
     },
 
     async sendText(chatId, content, opts) {

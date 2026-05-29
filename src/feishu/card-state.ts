@@ -90,6 +90,50 @@ export function renderCardJson(state: CardState, finished: boolean): object {
   };
 }
 
+export function renderThreadHeaderCard(opts: {
+  project: string;
+  prompt: string;
+  source: 'local' | 'feishu';
+}): object {
+  const promptPreview = opts.prompt.length > 200
+    ? opts.prompt.slice(0, 200) + '...'
+    : opts.prompt;
+
+  const sourceLabel = opts.source === 'local'
+    ? '💻 Terminal'
+    : '💬 Feishu';
+
+  return {
+    schema: '2.0',
+    header: {
+      title: { tag: 'plain_text', content: `📁 ${opts.project}` },
+      template: 'blue',
+    },
+    body: {
+      elements: [
+        { tag: 'markdown', content: promptPreview },
+        { tag: 'hr' },
+        {
+          tag: 'column_set',
+          columns: [
+            {
+              tag: 'column',
+              width: 'weighted',
+              weight: 1,
+              elements: [{ tag: 'markdown', content: '🤖 Claude Code', text_size: 'notation' }],
+            },
+            {
+              tag: 'column',
+              width: 'auto',
+              elements: [{ tag: 'markdown', content: sourceLabel, text_size: 'notation' }],
+            },
+          ],
+        },
+      ],
+    },
+  };
+}
+
 function toolIcon(t: ToolInfo): string {
   switch (t.name) {
     case 'Bash': return '⚡';
