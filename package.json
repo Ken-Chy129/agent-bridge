@@ -1,6 +1,6 @@
 {
   "name": "@ken-chy129/agent-bridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Bridge local coding agents (Claude Code, Codex, …) to Feishu/Lark with daemon-hosted multi-view sessions",
   "repository": {
     "type": "git",

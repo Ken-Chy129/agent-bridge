@@ -447,9 +447,24 @@ program
           } catch {}
         }
 
+        // Create new card for each assistant turn
+        if (msg.type === 'assistant' && !relayCardStream && feishu && feishuChatId) {
+          relayCardState = emptyCardState();
+          try {
+            relayCardStream = await feishu.streamCard(feishuChatId, renderCardJson(relayCardState, false));
+          } catch {}
+        }
+
         // Accumulate and update card
         relayCardState = reduceMessage(relayCardState, msg);
-        scheduleRelayUpdate();
+
+        if (msg.type === 'assistant' && msg.stopReason === 'end_turn') {
+          scheduleRelayUpdate(true);
+          relayCardStream = null;
+          relayCardState = emptyCardState();
+        } else {
+          scheduleRelayUpdate();
+        }
 
         // Console output
         if (msg.type === 'user') {
