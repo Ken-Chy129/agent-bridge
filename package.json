@@ -1,10 +1,21 @@
 {
-  "name": "agent-bridge",
+  "name": "@ken-chy129/agent-bridge",
   "version": "0.1.0",
   "description": "Bridge local coding agents (Claude Code, Codex, …) to Feishu/Lark with daemon-hosted multi-view sessions",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ken-Chy129/agent-bridge.git"
+  },
+  "homepage": "https://github.com/Ken-Chy129/agent-bridge#readme",
+  "bugs": {
+    "url": "https://github.com/Ken-Chy129/agent-bridge/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "bin": {
-    "agent-bridge": "./bin/agent-bridge.mjs"
+    "agent-bridge": "bin/agent-bridge.mjs"
   },
   "exports": {
     ".": {
