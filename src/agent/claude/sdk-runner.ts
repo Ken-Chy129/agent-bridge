@@ -3,6 +3,7 @@ import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 export type SdkEvent =
   | { type: 'init'; sessionId: string }
   | { type: 'text'; content: string }
+  | { type: 'text_delta'; content: string }
   | { type: 'tool_use'; name: string; input: string }
   | { type: 'result'; text: string; costUsd: number; durationMs: number; sessionId: string }
   | { type: 'error'; message: string };
@@ -41,7 +42,9 @@ async function* runSdkQuery(
   prompt: string,
   options: Record<string, unknown>,
 ): AsyncGenerator<SdkEvent> {
-  for await (const msg of query({ prompt, options: options as any })) {
+  // includePartialMessages → SDK emits `stream_event` deltas so we can stream
+  // assistant text token-by-token to the Feishu card instead of one block per turn.
+  for await (const msg of query({ prompt, options: { includePartialMessages: true, ...options } as any })) {
     yield* translateMessage(msg);
   }
 }
@@ -54,11 +57,20 @@ function* translateMessage(msg: SDKMessage): Generator<SdkEvent> {
     return;
   }
 
+  // Incremental token deltas (includePartialMessages). Only text is streamed here;
+  // tool_use is taken from the consolidated assistant message below to avoid doubling.
+  if (m.type === 'stream_event' && m.event) {
+    const ev = m.event;
+    if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta' && ev.delta.text) {
+      yield { type: 'text_delta', content: ev.delta.text };
+    }
+    return;
+  }
+
   if (m.type === 'assistant' && m.message?.content) {
     for (const block of m.message.content) {
-      if (block.type === 'text' && block.text) {
-        yield { type: 'text', content: block.text };
-      } else if (block.type === 'tool_use' && block.name) {
+      // Text already streamed via stream_event deltas — skip to avoid doubling.
+      if (block.type === 'tool_use' && block.name) {
         const input = typeof block.input === 'string'
           ? block.input
           : JSON.stringify(block.input ?? '');

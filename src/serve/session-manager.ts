@@ -1,6 +1,15 @@
 import { startSdkSession, resumeSdkSession, type SdkEvent } from '../agent/claude/sdk-runner';
-import { createSessionScanner } from '../scanner';
-import { emptyCardState, renderCardJson, renderThreadHeaderCard } from '../feishu/card-state';
+import { createSessionScanner, readLastUserPrompt, readLastAssistantText } from '../scanner';
+import { acquireSessionLock, releaseSessionLock } from './session-lock';
+import { discoverCCSessions } from '../daemon/discover';
+import {
+  emptyCardState,
+  renderCardJson,
+  renderThreadHeaderCard,
+  appendText,
+  appendTextDelta,
+  appendTool,
+} from '../feishu/card-state';
 import { addWorkingReaction, removeReaction } from '../feishu/reaction';
 import type { FeishuBridge, CardStream } from '../feishu/channel';
 import type { CardState } from '../feishu/card-state';
@@ -12,6 +21,8 @@ interface ManagedSession {
   threadMsgId: string | null;
   source: 'local' | 'feishu';
   busy: boolean;
+  /** PID of the local Claude Code process owning this session (relay mode). */
+  localPid?: number;
   cardStream: CardStream | null;
   cardState: CardState;
   cardUpdateTimer: NodeJS.Timeout | null;
@@ -28,6 +39,7 @@ export interface SessionManagerOptions {
 export class SessionManager {
   private sessions = new Map<string, ManagedSession>();
   private threads = new Map<string, string>(); // threadMsgId → sessionId
+  private lockedSessions = new Set<string>(); // sessions we hold a bridge lock for
   private readonly feishu: FeishuBridge;
   private readonly chatId: string;
   private readonly defaultCwd: string;
@@ -40,8 +52,15 @@ export class SessionManager {
     this.log = opts.log ?? console.log;
   }
 
-  async handleLocalSession(sessionId: string, cwd: string): Promise<void> {
-    if (this.sessions.has(sessionId)) return;
+  async handleLocalSession(sessionId: string, cwd: string, localPid?: number): Promise<boolean> {
+    if (this.sessions.has(sessionId)) return true;
+
+    const holder = acquireSessionLock(sessionId);
+    if (holder !== null) {
+      this.log(`[session] ${sessionId.slice(0, 8)} already bridged by pid ${holder}, skipping`);
+      return false;
+    }
+    this.lockedSessions.add(sessionId);
 
     this.log(`[session] local session discovered: ${sessionId.slice(0, 8)}... cwd=${cwd}`);
 
@@ -52,6 +71,7 @@ export class SessionManager {
       threadMsgId: null,
       source: 'local',
       busy: false,
+      localPid,
       cardStream: null,
       cardState: emptyCardState(),
       cardUpdateTimer: null,
@@ -70,6 +90,28 @@ export class SessionManager {
     scanner.initExisting(sessionId);
     scanner.startPolling();
     session.scanner = scanner;
+    return true;
+  }
+
+  /**
+   * Adopt an already-running local session on demand (relay / "take-away" mode):
+   * bridge it like a discovered session, then eagerly create the Feishu thread —
+   * seeded with the session's last prompt — so an idle session has a reply target
+   * immediately, without waiting for new terminal activity.
+   */
+  async adoptLocalSession(sessionId: string, cwd: string, localPid?: number): Promise<boolean> {
+    const acquired = await this.handleLocalSession(sessionId, cwd, localPid);
+    if (!acquired) return false;
+    const session = this.sessions.get(sessionId);
+    if (!session || session.threadMsgId) return true;
+    // Seed the thread card with where Claude left off (its last reply), not the
+    // user's own prompt — far more useful when picking the session up on a phone.
+    const seed =
+      readLastAssistantText(cwd, sessionId) ??
+      readLastUserPrompt(cwd, sessionId) ??
+      '(relayed session)';
+    await this.ensureFeishuThread(session, seed);
+    return true;
   }
 
   async handleFeishuMessage(chatId: string, rootMsgId: string, text: string, userMsgId?: string): Promise<void> {
@@ -81,6 +123,20 @@ export class SessionManager {
 
     if (session.busy) {
       this.log(`[session] ${sessionId.slice(0, 8)} busy, dropping message`);
+      return;
+    }
+
+    // Guard against dual-writer corruption: if the local Claude Code terminal is
+    // still actively running this session, do NOT fire a competing SDK resume.
+    if (this.isLocalSessionBusy(session)) {
+      this.log(`[session] ${sessionId.slice(0, 8)} locally busy, asking user to wait`);
+      try {
+        await this.feishu.sendText(
+          chatId,
+          '⏳ 本地会话正在运行中,请等它空闲后再发。',
+          { replyTo: rootMsgId, replyInThread: true },
+        );
+      } catch {}
       return;
     }
 
@@ -166,11 +222,26 @@ export class SessionManager {
     }
   }
 
+  /**
+   * Is the local Claude Code terminal still actively running this session?
+   * Checked against the owning PID's live status, so our own SDK-resume process
+   * (a different PID) never trips it.
+   */
+  private isLocalSessionBusy(session: ManagedSession): boolean {
+    if (!session.localPid) return false;
+    const found = discoverCCSessions().find(
+      (s) => s.pid === session.localPid && s.sessionId === session.sessionId,
+    );
+    return found?.status === 'busy';
+  }
+
   async shutdown(): Promise<void> {
     for (const session of this.sessions.values()) {
       session.scanner?.cleanup();
       if (session.cardUpdateTimer) clearTimeout(session.cardUpdateTimer);
     }
+    for (const sessionId of this.lockedSessions) releaseSessionLock(sessionId);
+    this.lockedSessions.clear();
     this.sessions.clear();
     this.threads.clear();
   }
@@ -204,21 +275,19 @@ export class SessionManager {
   private async handleSdkEvent(session: ManagedSession, evt: SdkEvent, replyMsgId: string): Promise<void> {
     if (evt.type === 'text') {
       await this.ensureCardStream(session, replyMsgId);
-      session.cardState = {
-        ...session.cardState,
-        texts: [...session.cardState.texts, evt.content],
-        lastUpdate: Date.now(),
-      };
+      session.cardState = appendText(session.cardState, evt.content);
+      this.scheduleCardUpdate(session);
+    }
+
+    if (evt.type === 'text_delta') {
+      await this.ensureCardStream(session, replyMsgId);
+      session.cardState = appendTextDelta(session.cardState, evt.content);
       this.scheduleCardUpdate(session);
     }
 
     if (evt.type === 'tool_use') {
       await this.ensureCardStream(session, replyMsgId);
-      session.cardState = {
-        ...session.cardState,
-        tools: [...session.cardState.tools, { name: evt.name, summary: evt.input.slice(0, 60) }],
-        lastUpdate: Date.now(),
-      };
+      session.cardState = appendTool(session.cardState, evt.name, evt.input.slice(0, 60));
       this.scheduleCardUpdate(session);
     }
 
@@ -310,17 +379,9 @@ export class SessionManager {
     if (Array.isArray(msg.content)) {
       for (const block of msg.content) {
         if (block.type === 'text' && block.text) {
-          session.cardState = {
-            ...session.cardState,
-            texts: [...session.cardState.texts, block.text],
-            lastUpdate: Date.now(),
-          };
+          session.cardState = appendText(session.cardState, block.text);
         } else if (block.type === 'tool_use' && block.name) {
-          session.cardState = {
-            ...session.cardState,
-            tools: [...session.cardState.tools, { name: block.name, summary: '' }],
-            lastUpdate: Date.now(),
-          };
+          session.cardState = appendTool(session.cardState, block.name, '');
         }
       }
       this.scheduleCardUpdate(session);

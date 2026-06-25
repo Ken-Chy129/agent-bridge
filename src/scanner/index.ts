@@ -84,6 +84,67 @@ function ccProjectDir(cwd: string): string {
   return join(homedir(), '.claude', 'projects', encoded);
 }
 
+/**
+ * Read the most recent human user prompt from a session's JSONL.
+ * Used to seed a relay's Feishu thread so an idle (already-chatting) session
+ * has a reply target immediately, without waiting for new activity.
+ */
+export function readLastUserPrompt(workingDirectory: string, sessionId: string): string | null {
+  const { msgs } = readJSONL(ccProjectDir(workingDirectory), sessionId, 0);
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (m.type !== 'user') continue;
+    // Skip auto-generated / non-human user entries: compaction continuation
+    // summaries and meta "continue from where you left off" prompts.
+    if (m.raw.isMeta || m.raw.isCompactSummary || m.raw.isVisibleInTranscriptOnly) continue;
+    const text = extractUserText(m.content);
+    if (text) return text;
+  }
+  return null;
+}
+
+function extractUserText(content: unknown): string | null {
+  if (typeof content === 'string') return content.trim() || null;
+  if (Array.isArray(content)) {
+    for (const block of content as Array<Record<string, unknown>>) {
+      if (block?.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
+        return block.text.trim();
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Read the most recent assistant text reply from a session's JSONL.
+ * Used to seed a relay's Feishu thread card with where Claude left off — far
+ * more useful when taking a session to your phone than echoing your own prompt.
+ */
+export function readLastAssistantText(workingDirectory: string, sessionId: string): string | null {
+  const { msgs } = readJSONL(ccProjectDir(workingDirectory), sessionId, 0);
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (m.type !== 'assistant') continue;
+    const text = extractAssistantText(m.content);
+    if (text) return text;
+  }
+  return null;
+}
+
+function extractAssistantText(content: unknown): string | null {
+  if (typeof content === 'string') return content.trim() || null;
+  if (Array.isArray(content)) {
+    const parts: string[] = [];
+    for (const block of content as Array<Record<string, unknown>>) {
+      if (block?.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
+        parts.push(block.text.trim());
+      }
+    }
+    if (parts.length) return parts.join('\n\n');
+  }
+  return null;
+}
+
 function readJSONL(projectDir: string, sessionId: string, fromOffset: number): { msgs: ScannedMessage[]; newOffset: number } {
   const file = join(projectDir, `${sessionId}.jsonl`);
   let size: number;

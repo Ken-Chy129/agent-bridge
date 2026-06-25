@@ -11,11 +11,12 @@ import {
 } from '../feishu/config';
 import { startFeishuBridge, type FeishuBridge, type CardStream } from '../feishu/channel';
 import { threadTitle } from '../feishu/format';
-import { emptyCardState, reduceMessage, renderCardJson } from '../feishu/card-state';
+import { emptyCardState, reduceMessage, renderCardJson, appendText } from '../feishu/card-state';
 import { addWorkingReaction, removeReaction } from '../feishu/reaction';
 import { runSetupWizard } from '../feishu/wizard';
 import type { NormalizedMessage } from '@larksuiteoapi/node-sdk';
 import { registerServeCommand } from './serve';
+import { SessionManager } from '../serve/session-manager';
 
 const program = new Command()
   .name('agent-bridge')
@@ -220,7 +221,7 @@ program
               cardStream = await feishu.streamCard(feishuChatId, renderCardJson(cardState, false), threadOpts);
             } catch {}
           }
-          cardState = { ...cardState, texts: [...cardState.texts, evt.content], lastUpdate: Date.now() };
+          cardState = appendText(cardState, evt.content);
           scheduleCardUpdate();
         }
         if (evt.type === 'result') {
@@ -367,7 +368,7 @@ program
 
 program
   .command('relay [sessionId]')
-  .description('Relay an existing Claude Code session to Feishu')
+  .description('Bridge an existing Claude Code session to Feishu (two-way: reply in the thread to drive it)')
   .action(async (sessionId?: string) => {
     const allSessions = discoverCCSessions();
 
@@ -402,100 +403,74 @@ program
     console.log(`Relaying session ${target.sessionId.slice(0, 8)}...`);
     console.log(`  PID: ${target.pid} | cwd: ${target.cwd} | status: ${target.status}`);
 
-    let feishu: FeishuBridge | null = null;
-    let feishuChatId: string | undefined;
-    let relayCardStream: CardStream | null = null;
-    let relayCardState = emptyCardState();
-    let relayFirstPrompt = false;
-
-    if (hasFeishuConfig()) {
-      const cfg = loadConfig();
-      feishuChatId = cfg.feishu!.chatId;
-      try {
-        feishu = await startFeishuBridge(cfg.feishu!);
-        console.log('  Feishu bridge connected.');
-      } catch (err) {
-        console.error(`  Feishu connection failed: ${err}. Console-only relay.`);
-      }
+    if (!hasFeishuConfig()) {
+      console.error('Feishu not configured. Run: agent-bridge config');
+      process.exit(1);
+    }
+    const cfg = loadConfig();
+    const chatId = cfg.feishu!.chatId;
+    if (!chatId) {
+      console.error('No topic group Chat ID. Run: agent-bridge config --create-group');
+      process.exit(1);
     }
 
-    let relayTimer: NodeJS.Timeout | null = null;
-    const scheduleRelayUpdate = (finished = false) => {
-      if (!relayCardStream) return;
-      if (relayTimer) clearTimeout(relayTimer);
-      relayTimer = setTimeout(async () => {
-        try { await relayCardStream!.update(renderCardJson(relayCardState, finished)); } catch {}
-      }, finished ? 0 : 300);
-    };
+    const log = (msg: string) => console.log(`${new Date().toLocaleTimeString()} ${msg}`);
 
-    console.log('  Watching JSONL for real-time updates. Ctrl+C to stop.\n');
+    let feishu: FeishuBridge;
+    try {
+      feishu = await startFeishuBridge(cfg.feishu!, {
+        onMessage: (msg: NormalizedMessage) => {
+          if (msg.chatId !== chatId) return;
+          const text = msg.content.trim();
+          if (!text) return;
 
-    const { createSessionScanner } = await import('../scanner');
-    const scanner = createSessionScanner({
-      workingDirectory: target.cwd,
-      onMessage: async (msg) => {
-        const ts = new Date().toLocaleTimeString();
+          const raw = msg as any;
+          const rootId = raw.rootId ?? raw.root_id;
+          const userMsgId = raw.messageId ?? raw.message_id;
 
-        // Create streaming card on first user message
-        if (!relayFirstPrompt && msg.type === 'user' && feishu && feishuChatId) {
-          relayFirstPrompt = true;
-          const content = msg.content;
-          const text = typeof content === 'string' ? content : '';
-          const title = threadTitle(target!.cwd, text);
-          try {
-            relayCardStream = await feishu.streamCard(feishuChatId, renderCardJson(emptyCardState(), false));
-          } catch {}
-        }
-
-        // Create new card for each assistant turn
-        if (msg.type === 'assistant' && !relayCardStream && feishu && feishuChatId) {
-          relayCardState = emptyCardState();
-          try {
-            relayCardStream = await feishu.streamCard(feishuChatId, renderCardJson(relayCardState, false));
-          } catch {}
-        }
-
-        // Accumulate and update card
-        relayCardState = reduceMessage(relayCardState, msg);
-
-        if (msg.type === 'assistant' && msg.stopReason === 'end_turn') {
-          scheduleRelayUpdate(true);
-          relayCardStream = null;
-          relayCardState = emptyCardState();
-        } else {
-          scheduleRelayUpdate();
-        }
-
-        // Console output
-        if (msg.type === 'user') {
-          const content = msg.content;
-          const preview = typeof content === 'string'
-            ? content.slice(0, 80)
-            : JSON.stringify(content)?.slice(0, 80);
-          console.log(`[${ts}] user → ${preview}`);
-        } else if (msg.type === 'assistant') {
-          const content = msg.content;
-          let preview = '';
-          if (Array.isArray(content)) {
-            const text = content.find((b: any) => b.type === 'text');
-            if (text?.text) preview = text.text.slice(0, 80);
-            const tools = content.filter((b: any) => b.type === 'tool_use');
-            if (tools.length > 0) preview += ` [+${tools.length} tool calls]`;
+          // Relay mode serves only the adopted session: route threaded replies,
+          // ignore non-threaded messages (no Feishu-initiated new sessions here).
+          if (rootId) {
+            manager.handleFeishuMessage(chatId, rootId, text, userMsgId).catch((err) => {
+              log(`[error] handleFeishuMessage failed: ${err}`);
+            });
           }
-          console.log(`[${ts}] assistant → ${preview || '(message)'}`);
-        }
-      },
+        },
+      });
+      console.log('  Feishu bridge connected.');
+    } catch (err) {
+      console.error(`Feishu connection failed: ${err}`);
+      process.exit(1);
+    }
+
+    const manager = new SessionManager({
+      feishu,
+      chatId,
+      defaultCwd: target.cwd,
+      log,
     });
 
-    scanner.initExisting(target.sessionId);
-    scanner.startPolling();
+    if (target.status === 'busy') {
+      console.warn('  ⚠️  Session is mid-output — Feishu will only show the tail of the current turn.');
+    }
 
-    process.on('SIGINT', async () => {
-      scanner.cleanup();
-      if (feishu) await feishu.disconnect();
+    const adopted = await manager.adoptLocalSession(target.sessionId, target.cwd, target.pid);
+    if (!adopted) {
+      console.error('  This session is already bridged by another agent-bridge process (serve or another relay). Stop that one first.');
+      await feishu.disconnect();
+      process.exit(1);
+    }
+    console.log('  Bridged to Feishu. Reply in the thread to drive the session.');
+    console.log('  Keep this laptop awake. Ctrl+C to stop.\n');
+
+    const shutdown = async () => {
+      await manager.shutdown();
+      await feishu.disconnect();
       console.log('\nRelay stopped.');
       process.exit(0);
-    });
+    };
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
 
     await new Promise(() => {});
   });
